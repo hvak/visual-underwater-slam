@@ -29,10 +29,8 @@ class AUV_ISAM:
         PARAMS.setOmegaCoriolis(vector3(0, 0, 0))
 
         BIAS_COVARIANCE = gtsam.noiseModel.Isotropic.Variance(6, 0.1)
-        DELTA = Pose3(Rot3.Rodrigues(0, 0, 0),
-                    Point3(0.05, -0.10, 0.20))
 
-        return PARAMS, BIAS_COVARIANCE, DELTA
+        return PARAMS, BIAS_COVARIANCE
 
     def update_imu(self, data):
         measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z])
@@ -76,14 +74,16 @@ class AUV_ISAM:
         pass
 
 
-    def update_isam(self, factors, edges):
+    def update_isam(self, vertices, edges):
 
         ## get factors to use in factor update
         edges = self.create_factors_from_recent()
 
         node_idx = 0
         state_idx = 0
-        for factor in factors:
+
+        ## TODO we only have one vertex at a time. need some loop to add all previous vertices in estimate
+        for vertex in vertices:
             graph = gtsam.gtsam.NonlinearFactorGraph()
             initial_estimate = gtsam.Values()
             init = False
