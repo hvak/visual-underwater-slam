@@ -23,7 +23,7 @@ class AUV_ISAM:
     def preintegration_parameters(self):
         # IMU preintegration parameters
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
-        PARAMS = gtsam.PreintegrationParams.MakeSharedU(g)
+        PARAMS = gtsam.PreintegrationParams.MakeSharedU(self.g)
         I = np.eye(3)
         # later TODO: Set covariance to be actual IMU covariance
         PARAMS.setAccelerometerCovariance(I * 0.1)
@@ -39,7 +39,7 @@ class AUV_ISAM:
 
     ##Retrieve and update ROS data as quickly as it is received.  Store it in various data structures
     def update_imu(self, data):
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot([self.g_transform, self.g])
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform, self.g)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         self.imu = np.array([measAcc, measOmega])
         return
@@ -95,9 +95,9 @@ class AUV_ISAM:
     
     def __init__(self):
         ## TODO Define Prior Noise
-        self.priorPose =  gtsam.pose3(np.eye(3), np.zeros(3))
+        self.priorPose =  gtsam.Pose3(gtsam.Rot3(0, 0, 0, 0), gtsam.Point3(0, 0, 0))
         self.priorNoise = None
-        self.priorVel = gtsam.pose3(np.eye(3), np.zeros(3))
+        self.priorVel = gtsam.Pose3(gtsam.Rot3(0, 0, 0, 0), gtsam.Point3(0, 0, 0))
         self.priorVelNoise = None
 
         ## stores most recent data from rosbag
@@ -105,7 +105,7 @@ class AUV_ISAM:
         self.odom = None
         self.dvl = None
         self.orb = None
-        self.g = vector3(0, 0, -9.81)
+        self.g = 9.81
         self.isam = gtsam.gtsam.ISAM2()
         
         self.timestep = 0
@@ -116,7 +116,8 @@ class AUV_ISAM:
         self.g_transform = 0
 
      
-    def update_isam(self, vertices, edges):
+    def update_isam(self):
+        print('test')
         
         graph = gtsam.gtsam.NonlinearFactorGraph()
         initial_estimate = gtsam.Values()
@@ -142,4 +143,5 @@ class AUV_ISAM:
         self.timestep += 1
         self.isam.update(graph, initial_estimate)                
         result = self.isam.calculateEstimate()
+        rospy.loginfo(result)
         ## TODO do something with resulting estimates

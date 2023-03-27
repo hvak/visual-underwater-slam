@@ -31,6 +31,7 @@ if __name__=='__main__':
     auv_slam = AUV_ISAM()
 
     while not rospy.is_shutdown():
-        auv_slam.g_transform = tfBuffer.lookup_transform('world', 'base_link', rospy.Time())
+        print('here')
+        #auv_slam.g_transform = tfBuffer.lookup_transform('world', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
         auv_slam.update_isam()
-        rospy.sleep(100)
+        rospy.sleep(0.01)
