@@ -10,6 +10,8 @@ from gtsam import (ISAM2, BetweenFactorConstantBias, Cal3_S2,
                    PinholeCameraCal3_S2, Point3, Pose3,
                    PriorFactorConstantBias, PriorFactorPose3,
                    PriorFactorVector, Rot3, Values)
+from functools import partial
+
 
 BIAS_KEY = B(0)
 
@@ -19,7 +21,36 @@ def vector3(x, y, z):
 
 
 class AUV_ISAM:
-    ##Iniotialize parameters for the IMU
+
+    def __init__(self):
+        ## TODO Define Prior Noise
+        self.priorPose =  gtsam.pose3(np.eye(3), np.zeros(3))
+        self.priorNoise = None
+        self.priorVel = gtsam.pose3(np.eye(3), np.zeros(3))
+        self.priorVelNoise = None
+
+        ## stores most recent data from rosbag
+        self.imu = None
+        self.odom = None
+        self.dvl = None
+        self.orb = None
+        self.g = vector3(0, 0, -9.81)
+        self.isam = gtsam.gtsam.ISAM2()
+        
+        self.timestep = 0
+        PARAMS, BIAS_COV = self.preintegration_parameters()
+        self.accum = gtsam.PreintegratedImuMeasurements(PARAMS)
+
+        self.initial_estimate = Values()
+        self.g_transform = 0
+
+        ## TODO
+        self.dvl_noise = None
+        self.depth_noise = None
+
+
+
+    ##Initialize parameters for the IMU
     def preintegration_parameters(self):
         # IMU preintegration parameters
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
@@ -37,7 +68,7 @@ class AUV_ISAM:
         return PARAMS, BIAS_COVARIANCE
 
 
-    ##Retrieve and update ROS data as quickly as it is received.  Store it in various data structures
+    ######Retrieve and update ROS data as quickly as it is received.  Store it in various data structures#######
     def update_imu(self, data):
         measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot([self.g_transform, self.g])
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
@@ -65,19 +96,28 @@ class AUV_ISAM:
 
         return
 
-    ##Create factors for the graph based on ROS datab
+    ########Create factors for the graph based on ROS data##########
     def create_imu_factor(self):
         delta_t = .01
         self.accum.integrateMeasurement(self.imu[0], self.imu[1], delta_t)
         imuFactor = ImuFactor(X(self.timestep - 1), V(self.timestep - 1), X(self.timestep), V(self.timestep), BIAS_KEY, self.accum)
         return imuFactor
     
-    def create_dvl_factor(self):
-        dvlFactor = None
+    def create_dvl_factor(self, dvl_measurement):
+        ## currently unary
+        dvlFactor = gtsam.CustomFactor(
+                        self.dvl_noise,
+                        [self.timestep],
+                        partial(self.velocity_error, np.array([dvl_measurement])), 
+                    )
         return dvlFactor
     
-    def create_depth_factor(self):
-        depthFactor = None
+    def create_depth_factor(self, depth_measurement):
+        depthFactor =  depth_factor = gtsam.CustomFactor(
+                        self.depth_noise,
+                        [self.timestep],
+                        partial(self.depth_error, np.array([depth_measurement])),
+                    )
         return depthFactor
 
     def create_orb_factor(self):
@@ -93,27 +133,49 @@ class AUV_ISAM:
         odom = gtsam.Pose3(rot, t)
         return odom
     
-    def __init__(self):
-        ## TODO Define Prior Noise
-        self.priorPose =  gtsam.pose3(np.eye(3), np.zeros(3))
-        self.priorNoise = None
-        self.priorVel = gtsam.pose3(np.eye(3), np.zeros(3))
-        self.priorVelNoise = None
 
-        ## stores most recent data from rosbag
-        self.imu = None
-        self.odom = None
-        self.dvl = None
-        self.orb = None
-        self.g = vector3(0, 0, -9.81)
-        self.isam = gtsam.gtsam.ISAM2()
-        
-        self.timestep = 0
-        PARAMS, BIAS_COV = self.preintegration_parameters()
-        self.accum = gtsam.PreintegratedImuMeasurements(PARAMS)
+    
+    ## copied from online customfactor examples
+    def error_depth(measurement: np.ndarray, this: gtsam.CustomFactor,
+              values: gtsam.Values,
+              jacobians: Optional[List[np.ndarray]]) -> float:
+        """depth Factor error function
+        :param measurement: depth measurement, to be filled with `partial`
+        :param this: gtsam.CustomFactor handle
+        :param values: gtsam.Values
+        :param jacobians: Optional list of Jacobians
+        :return: the unwhitened error
+        """
+        key = this.keys()[0]
+        estimate = values.atPose3(key)
+        depth = estimate.z()
+        error = measurement - depth
+        if jacobians is not None:
+            val = np.zeros((1, 6))
+            val[0, 2] = 1
+            jacobians[0] = val
+        return error
+    
+        ## copied from online customfactor examples
+    def error_dvl(measurement: np.ndarray, this: gtsam.CustomFactor,
+              values: gtsam.Values,
+              jacobians: Optional[List[np.ndarray]]) -> float:
+        """dvl Factor error function
+        :param measurement: dvl measurement, to be filled with `partial`
+        :param this: gtsam.CustomFactor handle
+        :param values: gtsam.Values
+        :param jacobians: Optional list of Jacobians
+        :return: the unwhitened error
+        """
+        key = this.keys()[0]
+        estimate = values.atVector(key)
+        error = estimate - measurement
+        if jacobians is not None:
+            jacobians[0] = np.eye()
 
-        self.initial_estimate = Values()
-        self.g_transform = 0
+        return error
+    
+    
 
      
     def update_isam(self, vertices, edges):
