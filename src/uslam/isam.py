@@ -23,7 +23,7 @@ class AUV_ISAM:
     def preintegration_parameters(self):
         # IMU preintegration parameters
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
-        PARAMS = gtsam.PreintegrationParams.MakeSharedU(self.g)
+        PARAMS = gtsam.PreintegrationParams.MakeSharedU(self.grav)
         I = np.eye(3)
         # later TODO: Set covariance to be actual IMU covariance
         PARAMS.setAccelerometerCovariance(I * 0.1)
@@ -39,12 +39,14 @@ class AUV_ISAM:
 
     ##Retrieve and update ROS data as quickly as it is received.  Store it in various data structures
     def update_imu(self, data):
+        print("IMU Update")
         measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform, self.g)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         self.imu = np.array([measAcc, measOmega])
         return
 
     def update_odom(self, data):
+        print("Odom Update")
         self.odom = {"x": data.pose.pose.position.x, 
                      "y": data.pose.pose.position.y,
                      "z": data.pose.pose.position.z,
@@ -55,12 +57,14 @@ class AUV_ISAM:
         return
 
     def update_dvl(self, data):
+        print("DVL Update")
         self.dvl = {"x" : data.twist.linear.x,
                     "y" : data.twist.linear.y,
                     "z" : data.twist.linear.z}
         return
 
     def update_orb(self, data):
+        print("ORB Update")
         #self.orb = np.array([data.landmarkSeen, data.landMarkId])
 
         return
@@ -84,6 +88,14 @@ class AUV_ISAM:
         orbFactor = None
         return orbFactor
     
+    def get_factors(self):
+        imuFactor = self.create_imu_factor()
+        dvlFactor = self.create_dvl_factor()
+        depthFactor = self.create_depth_factor()
+        orbFactor = self.create_orb_factor()
+        factors = np.array([imuFactor])
+        return factors
+    
     # returns odometry as gtsam pose3 object
     def get_odom_as_pose3(self):
         t = gtsam.Point3( self.odom['x'], 
@@ -95,17 +107,24 @@ class AUV_ISAM:
     
     def __init__(self):
         ## TODO Define Prior Noise
-        self.priorPose =  gtsam.Pose3(gtsam.Rot3(0, 0, 0, 0), gtsam.Point3(0, 0, 0))
-        self.priorNoise = None
-        self.priorVel = gtsam.Pose3(gtsam.Rot3(0, 0, 0, 0), gtsam.Point3(0, 0, 0))
-        self.priorVelNoise = None
+        self.priorPose =  gtsam.Pose3(gtsam.Rot3.Quaternion(0, 0, 0, 0), gtsam.Point3(0, 0, 0))
+        self.priorNoise = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
+        self.priorVel = gtsam.Point3(0, 0, 0)
+        self.priorVelNoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.25)
 
         ## stores most recent data from rosbag
         self.imu = None
-        self.odom = None
+        self.odom = {"x": 0, 
+                     "y": 0,
+                     "z": 0,
+                     "i": 0,
+                     "j": 0,
+                     "k": 0, 
+                     "q": 0}
         self.dvl = None
         self.orb = None
-        self.g = 9.81
+        self.grav = 9.81
+        self.g = vector3(0, 0, -self.grav)
         self.isam = gtsam.gtsam.ISAM2()
         
         self.timestep = 0
@@ -122,8 +141,11 @@ class AUV_ISAM:
         graph = gtsam.gtsam.NonlinearFactorGraph()
         initial_estimate = gtsam.Values()
         if self.timestep == 0:
-            graph.push_back(gtsam.gtsam.PriorFactorPose3(X(0), self.priorPose, self.priorNoise))
-            graph.push_back(gtsam.PriorFactorPoint3(X(0), self.priorVel, self.priorVelNoise ))
+            graph.push_back(gtsam.PriorFactorPose3(X(0), self.priorPose, self.priorNoise))
+            graph.push_back(gtsam.PriorFactorPoint3(V(0), self.priorVel, self.priorVelNoise ))
+
+            initial_estimate.insert(X(0), self.priorPose)
+            initial_estimate.insert(V(0), self.priorVel)
 
         else: 
             currentOdomEst = self.get_odom_as_pose3()
@@ -132,9 +154,10 @@ class AUV_ISAM:
             ## add the current odom as a variable in estimate, to be updated later
             initial_estimate.insert(X(self.timestep), currentOdomEst)
             initial_estimate.insert(V(self.timestep), currentVelEst)
+            initial_estimate.insert(BIAS_KEY, gtsam.imuBias.ConstantBias())
             
             ## get factors to use in factor update
-            factors = self.create_factors_from_recent() 
+            factors = self.get_factors() 
 
             ## add most recent measurements as edges in graph
             for factor in factors:

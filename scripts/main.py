@@ -5,6 +5,8 @@ from waterlinked_a50_ros_driver.msg import DVL
 import sys
 import tf2_ros
 
+auv_slam = AUV_ISAM()
+
 def callback_imu(data):
     auv_slam.update_imu(data) # whatever this is
 
@@ -28,10 +30,8 @@ if __name__=='__main__':
     #rospy.Subscriber('/mavros/imu/data_raw', sensor_msgs.msg.Imu, callback_odom)
     rospy.Subscriber('/dev/data', DVL, callback_dvl)
 
-    auv_slam = AUV_ISAM()
-
     while not rospy.is_shutdown():
         print('here')
         #auv_slam.g_transform = tfBuffer.lookup_transform('world', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
         auv_slam.update_isam()
-        rospy.sleep(0.01)
+        rospy.sleep(0.5)
