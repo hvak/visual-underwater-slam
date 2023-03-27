@@ -1,5 +1,5 @@
 import rospy
-import uslam.isam
+from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
 from waterlinked_a50_ros_driver.msg import DVL
 import sys
@@ -28,7 +28,7 @@ if __name__=='__main__':
     #rospy.Subscriber('/mavros/imu/data_raw', sensor_msgs.msg.Imu, callback_odom)
     rospy.Subscriber('/dev/data', DVL, callback_dvl)
 
-    auv_slam = uslam.isam.AUV_SLAM()
+    auv_slam = AUV_ISAM()
 
     while not rospy.is_shutdown():
         auv_slam.g_transform = tfBuffer.lookup_transform('world', 'base_link', rospy.Time())
