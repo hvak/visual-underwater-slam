@@ -136,7 +136,10 @@ class AUV_ISAM:
 
      
     def update_isam(self):
+<<<<<<< HEAD
         print('test')
+=======
+>>>>>>> f621caf (small changes)
         
         graph = gtsam.gtsam.NonlinearFactorGraph()
         initial_estimate = gtsam.Values()
