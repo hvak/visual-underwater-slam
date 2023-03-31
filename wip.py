@@ -38,7 +38,7 @@ def callback_imu(data):
 
 def callback_odom(data):
     auv_isam.update_odom(data)
-    print(data.pose.pose.position)
+    #print(data.pose.pose.position)
 
 
 
@@ -82,7 +82,7 @@ class AUV_ISAM:
         self.velnoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
 
         # Calculate with correct initial velocity
-        self.n_velocity = vector3(0, self.angular_velocity * self.radius, 0)
+        self.n_velocity = vector3(0, 0, 0)
         self.velprior = PriorFactorVector(V(0), self.n_velocity, self.velnoise)
         self.graph.push_back(self.velprior)
         self.initialEstimate.insert(V(0), self.n_velocity)
@@ -133,11 +133,10 @@ class AUV_ISAM:
     
     def update_imu(self, data):
         #print("IMU Update")
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) + self.g
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) + np.dot(self.g_transform, self.g)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
-
-        print('here', measAcc)
-        self.imu = np.array([[0.1, 0, 0], measOmega])
+        #print('here', measAcc)
+        self.imu = np.array([measAcc, measOmega])
         return
 
     def update_odom(self, data):
@@ -279,6 +278,19 @@ if __name__ == '__main__':
 
     while not rospy.is_shutdown():
         #auv_isam.g_transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
+        got_transform = False
+        while not got_transform:
+            try:
+                transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
+                got_transform = True
+                auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
+                                                             transform.transform.rotation.x, 
+                                                             transform.transform.rotation.y, 
+                                                             transform.transform.rotation.x).matrix()
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                print("exception in transform lookup loop")
+                continue
+
         if auv_isam.odom is not None:
             auv_isam.update()
 
