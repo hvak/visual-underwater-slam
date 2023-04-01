@@ -10,7 +10,7 @@ from __future__ import print_function
 import rospy
 from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
 # from waterlinked_a50_ros_driver.msg import DVL
 import sys
 import tf2_ros
@@ -40,6 +40,9 @@ def callback_odom(data):
     auv_isam.update_odom(data)
     #print(data.pose.pose.position)
 
+def callback_mavros_vel(data):
+    auv_isam.update_mavros_vel(data)
+    print(data)
 
 
 def vector3(x, y, z):
@@ -89,6 +92,7 @@ class AUV_ISAM:
 
         self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS)
 
+        self.mav_vel = None
         self.odom = None
 
         self.g_transform = None
@@ -149,12 +153,23 @@ class AUV_ISAM:
                      "k": data.pose.pose.orientation.z, 
                      "q": data.pose.pose.orientation.w}
         return
+
+    def update_mavros_vel(self, data):
+        # print("mavros vel Update")
+        self.mav_vel = {"x" : data.twist.linear.x,
+                    "y" : data.twist.linear.y,
+                    "z" : data.twist.linear.z}
+        return
     
     def create_imu_factor(self):
         delta_t = .01
         self.accum.integrateMeasurement(self.imu[0], self.imu[1], delta_t)
         imuFactor = ImuFactor(X(self.timestamp - 1), V(self.timestamp - 1), X(self.timestamp), V(self.timestamp), self.biasKey, self.accum)
         return imuFactor
+    
+    def create_mavros_vel_factor(self):
+        # 
+        return
     
     def get_factors(self):
         imuFactor = self.create_imu_factor()
@@ -247,7 +262,7 @@ class AUV_ISAM:
                 self.graph.add(imufac)
 
                 # insert new velocity, which is wrong
-                self.initialEstimate.insert(V(self.timestamp), self.n_velocity)
+                self.initialEstimate.insert(V(self.timestamp), vector3(self.mav_vel['x'], self.mav_vel['y'], self.mav_vel['z']))
                 self.accum.resetIntegration()
 
             # Incremental solution
@@ -272,6 +287,8 @@ if __name__ == '__main__':
 
     rospy.Subscriber('/mavros/imu/data_raw', Imu, callback_imu)
     rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
+    rospy.Subscriber('/mavros/velocity_local', TwistStamped, callback_mavros_vel)
+    
     # rospy.Subscriber('/dev/data', DVL, callback_dvl)
 
     auv_isam = AUV_ISAM()
