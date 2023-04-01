@@ -262,7 +262,10 @@ class AUV_ISAM:
                 self.graph.add(imufac)
 
                 # insert new velocity, which is wrong
-                self.initialEstimate.insert(V(self.timestamp), vector3(self.mav_vel['x'], self.mav_vel['y'], self.mav_vel['z']))
+                if self.mav_vel is not None:
+                    self.initialEstimate.insert(V(self.timestamp), vector3(self.mav_vel['x'], self.mav_vel['y'], self.mav_vel['z']))
+                else:
+                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
                 self.accum.resetIntegration()
 
             # Incremental solution
