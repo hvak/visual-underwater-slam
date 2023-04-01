@@ -136,8 +136,12 @@ class AUV_ISAM:
         return scenario
     
     def update_imu(self, data):
-        #print("IMU Update")
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) + np.dot(self.g_transform, self.g)
+        print("IMU Update")
+        print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
+        print("transform: ", self.g_transform)
+        print("transformed gravity ", np.dot(self.g_transform, self.g))
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform, self.g)
+        print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
         self.imu = np.array([measAcc, measOmega])
@@ -298,7 +302,7 @@ if __name__ == '__main__':
 
     while not rospy.is_shutdown():
         #auv_isam.g_transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
-        got_transform = False
+        got_transform = False    
         while not got_transform:
             try:
                 transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
@@ -311,6 +315,7 @@ if __name__ == '__main__':
                 print("exception in transform lookup loop")
                 continue
 
+        # auv_isam.g_transform = gtsam.Rot3.Quaternion(1.0, 0.0, 0.0, 0.0).matrix()
         if auv_isam.odom is not None:
             auv_isam.update()
 
