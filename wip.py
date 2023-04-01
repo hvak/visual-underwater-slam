@@ -137,11 +137,11 @@ class AUV_ISAM:
     
     def update_imu(self, data):
         print("IMU Update")
-        print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
-        print("transform: ", self.g_transform)
-        print("transformed gravity ", np.dot(self.g_transform, self.g))
+        #print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
+        #print("transform: ", self.g_transform)
+        #print("transformed gravity ", np.dot(self.g_transform, self.g))
         measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform, self.g)
-        print("final accel with gravity removed", measAcc)
+        #print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
         self.imu = np.array([measAcc, measOmega])
@@ -267,8 +267,10 @@ class AUV_ISAM:
 
                 # insert new velocity, which is wrong
                 if self.mav_vel is not None:
+                    print("adding vel ", self.mav_vel)
                     self.initialEstimate.insert(V(self.timestamp), vector3(self.mav_vel['x'], self.mav_vel['y'], self.mav_vel['z']))
                 else:
+                    print("not adding vel", self.mav_vel)
                     self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
                 self.accum.resetIntegration()
 
