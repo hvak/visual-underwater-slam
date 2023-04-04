@@ -42,7 +42,7 @@ def callback_odom(data):
 
 def callback_mavros_vel(data):
     auv_isam.update_mavros_vel(data)
-    print(data)
+    #print(data)
 
 
 def vector3(x, y, z):
@@ -242,7 +242,7 @@ class AUV_ISAM:
                 self.initialEstimate.insert(X(1), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
             elif self.timestamp >= 2:  # Add more poses as necessary
                 #pose_i = self.scenario.pose(t)
-                self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
+                self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
 
             if self.timestamp > 0:
                 # Add Bias variables periodically
@@ -267,10 +267,10 @@ class AUV_ISAM:
 
                 # insert new velocity, which is wrong
                 if self.mav_vel is not None:
-                    print("adding vel ", self.mav_vel)
+                    #print("adding vel ", self.mav_vel)
                     self.initialEstimate.insert(V(self.timestamp), vector3(self.mav_vel['x'], self.mav_vel['y'], self.mav_vel['z']))
                 else:
-                    print("not adding vel", self.mav_vel)
+                    #print("not adding vel", self.mav_vel)
                     self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
                 self.accum.resetIntegration()
 
@@ -279,7 +279,7 @@ class AUV_ISAM:
             result = self.isam.calculateEstimate()
             plot.plot_incremental_trajectory(0, result,
                                             start=self.timestamp, scale=3, time_interval=0.01)
-            plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
+            plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.5)
 
             # reset
             self.graph = NonlinearFactorGraph()
@@ -295,9 +295,9 @@ if __name__ == '__main__':
     tfBuffer = tf2_ros.Buffer()
     listener = tf2_ros.TransformListener(tfBuffer)
 
-    rospy.Subscriber('/mavros/imu/data_raw', Imu, callback_imu)
+    rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
     rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
-    rospy.Subscriber('/mavros/velocity_local', TwistStamped, callback_mavros_vel)
+    rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
     
     # rospy.Subscriber('/dev/data', DVL, callback_dvl)
 
@@ -313,7 +313,7 @@ if __name__ == '__main__':
                 auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
                                                              transform.transform.rotation.x, 
                                                              transform.transform.rotation.y, 
-                                                             transform.transform.rotation.x).matrix()
+                                                             transform.transform.rotation.z).matrix()
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
                 print("exception in transform lookup loop")
                 continue
