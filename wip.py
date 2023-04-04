@@ -8,7 +8,7 @@ from __future__ import print_function
 
 
 import rospy
-from uslam.isam import AUV_ISAM
+#from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
 # from waterlinked_a50_ros_driver.msg import DVL
@@ -42,7 +42,7 @@ def callback_odom(data):
 
 def callback_mavros_vel(data):
     auv_isam.update_mavros_vel(data)
-    #print("VELOCITY RECIEVED", data)
+    print(data)
 
 
 def vector3(x, y, z):
@@ -136,7 +136,7 @@ class AUV_ISAM:
         return scenario
     
     def update_imu(self, data):
-        #print("IMU Update")
+        print("IMU Update")
         #print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
         #print("transform: ", self.g_transform)
         #print("transformed gravity ", np.dot(self.g_transform, self.g))
@@ -279,6 +279,7 @@ class AUV_ISAM:
             result = self.isam.calculateEstimate()
             plot.plot_incremental_trajectory(0, result,
                                             start=self.timestamp, scale=3, time_interval=0.01)
+            plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
 
             # reset
             self.graph = NonlinearFactorGraph()
@@ -296,7 +297,7 @@ if __name__ == '__main__':
 
     rospy.Subscriber('/mavros/imu/data_raw', Imu, callback_imu)
     rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
-    rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
+    rospy.Subscriber('/mavros/velocity_local', TwistStamped, callback_mavros_vel)
     
     # rospy.Subscriber('/dev/data', DVL, callback_dvl)
 
