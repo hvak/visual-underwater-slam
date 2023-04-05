@@ -1,7 +1,3 @@
-"""
-ImuFactor example with iSAM2.
-Authors: Robert Truax (C++), Frank Dellaert, Varun Agrawal (Python)
-"""
 # pylint: disable=invalid-name, E1101
 
 from __future__ import print_function
@@ -11,9 +7,11 @@ import rospy
 #from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
-# from waterlinked_a50_ros_driver.msg import DVL
+from waterlinked_a50_ros_driver.msg import DVL
+from typing import Optional, List
 import sys
 import tf2_ros
+from functools import partial
 
 
 import math
@@ -31,6 +29,11 @@ from gtsam import (ISAM2, BetweenFactorConstantBias, Cal3_S2,
 from gtsam.symbol_shorthand import B, V, X
 from gtsam.utils import plot
 
+###############################
+#
+#   Callbacks, Global
+#
+################################
 
 def callback_imu(data):
     auv_isam.update_imu(data) # whatever this is
@@ -44,6 +47,9 @@ def callback_mavros_vel(data):
     auv_isam.update_mavros_vel(data)
     #print(data)
 
+def callback_dvl(data):
+    auv_isam.update_dvl(data)
+    #print(data)
 
 def vector3(x, y, z):
     """Create 3d double numpy array."""
@@ -57,6 +63,12 @@ n_gravity = vector3(0, 0, -g)
 #y = [0.38682050539411933, 0.3971632041846082, 0.401421910811749, 0.4156703408906957, 0.4260122680672318, 0.43461185988587325, 0.43943945117809496]
 #z = [0.04080228845815051, 0.030272680948478296, 0.03397887301502824, 0.03459286951347812, 0.03237211325028328, 0.034703925922842674, 0.049627694983907435]
 
+###############################
+#
+#   ISAM Class
+#
+################################
+
 class AUV_ISAM:
     def __init__(self):
         self.PARAMS, self.BIAS_COVARIANCE, self.DELTA = self.preintegration_parameters()
@@ -65,7 +77,6 @@ class AUV_ISAM:
         self.pose_0 = gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [0, 0, 0])
         self.delta_t = 1.0/18  # makes for 10 degrees per step
         self.angular_velocity = math.radians(180)  # rad/sec
-        self.scenario = self.get_scenario(self.radius, self.pose_0, self.angular_velocity)
         self.graph = NonlinearFactorGraph()
         self.isam = ISAM2()
         self.initialEstimate = Values()
@@ -92,8 +103,14 @@ class AUV_ISAM:
 
         self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS)
 
+        ### DATA TYPES
         self.mav_vel = None
         self.odom = None
+        self.dvl = None
+
+        ### DATA NOISE
+        self.dvl_model = gtsam.noiseModel.Isotropic.Sigma(3, 0.1) ## Bagoren et al
+
 
         self.g_transform = None
         self.grav = 9.81
@@ -124,16 +141,12 @@ class AUV_ISAM:
         position = Point3(radius, 0, 0)
         camera = PinholeCameraCal3_S2.Lookat(position, target, up, Cal3_S2())
         return camera
-
-
-    def get_scenario(self, radius, pose_0, angular_velocity):
-        """Create the set of ground-truth landmarks and poses"""
-        angular_velocity_vector = vector3(0, -angular_velocity, 0)
-        linear_velocity_vector = vector3(radius * angular_velocity, 0, 0)
-        scenario = ConstantTwistScenario(
-            angular_velocity_vector, linear_velocity_vector, pose_0)
-
-        return scenario
+    
+    ###############################
+    #
+    #   Update Data
+    #
+    ################################
     
     def update_imu(self, data):
         print("IMU Update")
@@ -165,6 +178,60 @@ class AUV_ISAM:
                     "z" : data.twist.linear.z}
         return
     
+    def update_dvl(self, data):
+        # print("dvlUpdate")
+        # stays in dvl link frame, but error function changes it to world
+        self.dvl = np.array([ data.twist.linear.x, data.twist.linear.y, data.twist.linear.z])
+        return
+    
+
+    ###############################
+    #
+    #   Unary Factor Errors
+    #
+    ################################
+
+    def velocity_error(
+        self,
+        measurement: np.ndarray,
+        this: gtsam.CustomFactor,
+        values: gtsam.Values,
+        jacobians: Optional[List[np.ndarray]],
+    ) -> float:
+        """
+        Calculate the error betwen the velocity prediction and the velocity measurement
+        ana notes: retaining bagoren et al's jacobian and typing (list, optional keywords)
+        """
+        key = this.keys()[0] # key = timestamp
+        vel_estimate = values.atPoint3(V(key)) # get previous estimates from graph
+        pose_estimate = values.atPose3(X(key))
+
+        rot_mat = pose_estimate.rotation().matrix()
+        vx = vel_estimate[0]
+        vy = vel_estimate[1]
+        vz = vel_estimate[2]
+        v = np.array([vx, vy, vz]).reshape((3, 1))
+
+        meas_t = measurement.T
+        meas_world = rot_mat @ meas_t # convert dvl vel to world frame using the estimate's transform
+
+        error = np.array(
+            [
+                meas_world[0, 0] - v[0, 0],
+                meas_world[1, 0] - v[1, 0],
+                meas_world[2, 0] - v[2, 0],
+            ]
+        )
+        if jacobians is not None:
+            jacobians[0] = rot_mat
+        return error
+
+    ###############################
+    #
+    #   Create Factors
+    #
+    ################################
+    
     def create_imu_factor(self):
         delta_t = .01
         self.accum.integrateMeasurement(self.imu[0], self.imu[1], delta_t)
@@ -172,76 +239,33 @@ class AUV_ISAM:
         return imuFactor
     
     def create_mavros_vel_factor(self):
-        # 
+        #
         return
+    
+    def create_dvl_factor(self):
+        dvl_factor = gtsam.CustomFactor(
+                        self.dvl_model,
+                        [self.timestamp], # TODO not necessarily the same as the data received time?
+                        partial(self.velocity_error, np.array([self.dvl])),
+                    )
+        return dvl_factor
     
     def get_factors(self):
         imuFactor = self.create_imu_factor()
-        # dvlFactor = self.create_dvl_factor()
+        dvlFactor = self.create_dvl_factor()
         # depthFactor = self.create_depth_factor()
         # orbFactor = self.create_orb_factor()
-        factors = np.array([imuFactor])
+        factors = [imuFactor, dvlFactor]
         return factors
-
-
-# def IMU_example_setup():
-#     """Run iSAM 2 example with IMU factor."""
-
-#     # Start with a camera on x-axis looking at origin
-#     radius = 30
-#     #camera = get_camera(radius)
-#     #pose_0 = camera.pose()
-#     pose_0 = gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [x[0], y[0], z[0]])
-
-#     delta_t = 1.0/18  # makes for 10 degrees per step
-#     angular_velocity = math.radians(180)  # rad/sec
-#     scenario = get_scenario(radius, pose_0, angular_velocity, delta_t)
-
-#     PARAMS, BIAS_COVARIANCE, DELTA = preintegration_parameters()
-    
-#     # Create a factor graph
-#     graph = NonlinearFactorGraph()
-
-#     # Create (incremental) ISAM2 solver
-#     isam = ISAM2()
-
-#     # Create the initial estimate to the solution
-#     # Intentionally initialize the variables off from the ground truth
-#     initialEstimate = Values()
-
-#     # Add a prior on pose x0. This indirectly specifies where the origin is.
-#     # 30cm std on x,y,z 0.1 rad on roll,pitch,yaw
-#     noise = gtsam.noiseModel.Diagonal.Sigmas(
-#         np.array([0.1, 0.1, 0.1, 0.3, 0.3, 0.3]))
-#     graph.push_back(PriorFactorPose3(X(0), pose_0, noise))
-
-#     # Add imu priors
-#     biasKey = B(0)
-#     biasnoise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
-#     biasprior = PriorFactorConstantBias(biasKey, gtsam.imuBias.ConstantBias(),
-#                                         biasnoise)
-#     graph.push_back(biasprior)
-#     initialEstimate.insert(biasKey, gtsam.imuBias.ConstantBias())
-#     velnoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
-
-#     # Calculate with correct initial velocity
-#     n_velocity = vector3(0, angular_velocity * radius, 0)
-#     velprior = PriorFactorVector(V(0), n_velocity, velnoise)
-#     graph.push_back(velprior)
-#     initialEstimate.insert(V(0), n_velocity)
-
-#     accum = gtsam.PreintegratedImuMeasurements(PARAMS)
 
     def update(self):
 
         # Simulate poses and imu measurements, adding them to the factor graph
             t = self.timestamp * self.delta_t  # simulation time
             if self.timestamp == 0:  # First time add two poses
-                #pose_1 = self.scenario.pose(self.delta_t)
                 self.initialEstimate.insert(X(0), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
                 self.initialEstimate.insert(X(1), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
             elif self.timestamp >= 2:  # Add more poses as necessary
-                #pose_i = self.scenario.pose(t)
                 self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
 
             if self.timestamp > 0:
@@ -253,17 +277,9 @@ class AUV_ISAM:
                     self.graph.add(factor)
                     self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
 
-                # Predict acceleration and gyro measurements in (actual) body frame
-                # nRb = self.scenario.rotation(t).matrix() #Gets rotation matrix from body to navigational frame
-                # bRn = np.transpose(nRb) #Converts nRb to be from navigational to body
-                # measuredAcc = self.scenario.acceleration_b(t) - np.dot(bRn, n_gravity) #removes measured gravitational accel
-                # measuredOmega = self.scenario.omega_b(t) #Gets gryo measurement
-                # self.accum.integrateMeasurement(measuredAcc, measuredOmega, self.delta_t)
-
-                # Add Imu Factor
-                #imufac = ImuFactor(X(self.timestamp - 1), V(self.timestamp - 1), X(self.timestamp), V(self.timestamp), self.biasKey, self.accum)
-                imufac = self.get_factors()[0]
-                self.graph.add(imufac)
+                # Add Factors
+                for factor in self.get_factors():
+                    self.graph.add(factor)
 
                 # insert new velocity, which is wrong
                 if self.mav_vel is not None:
@@ -297,9 +313,8 @@ if __name__ == '__main__':
 
     rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
     rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
-    rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
-    
-    # rospy.Subscriber('/dev/data', DVL, callback_dvl)
+    # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
+    rospy.Subscriber('/dvl/twist', TwistStamped, callback_dvl)
 
     auv_isam = AUV_ISAM()
 
@@ -308,6 +323,7 @@ if __name__ == '__main__':
         got_transform = False    
         while not got_transform:
             try:
+                ## todo make sure transform time matches pose time?
                 transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
                 got_transform = True
                 auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
@@ -318,6 +334,7 @@ if __name__ == '__main__':
                 print("exception in transform lookup loop")
                 continue
 
+        auv_isam.dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
         # auv_isam.g_transform = gtsam.Rot3.Quaternion(1.0, 0.0, 0.0, 0.0).matrix()
         if auv_isam.odom is not None:
             auv_isam.update()
