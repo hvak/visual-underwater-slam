@@ -6,6 +6,7 @@ from __future__ import print_function
 import rospy
 #from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
+from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
 from waterlinked_a50_ros_driver.msg import DVL
 from typing import Optional, List
@@ -155,7 +156,7 @@ class AUV_ISAM:
         #print("transformed gravity ", np.dot(self.g_transform, self.g))
         if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
             print(data)
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform.T, self.g)
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) #- np.dot(self.g_transform.T, self.g)
         #print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
@@ -318,8 +319,10 @@ if __name__ == '__main__':
     tfBuffer = tf2_ros.Buffer()
     listener = tf2_ros.TransformListener(tfBuffer)
 
-    rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
-    rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
+    rospy.Subscriber('/zedm/zed_node/imu/data', Imu, callback_imu)
+    #rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
+    rospy.Subscriber('/zedm/zed_node/odom', Odometry, callback_odom)
+    # rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
     # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
     rospy.Subscriber('/dvl/twist', TwistStamped, callback_dvl)
 
@@ -327,7 +330,7 @@ if __name__ == '__main__':
 
     while not rospy.is_shutdown():
         #auv_isam.g_transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
-        got_transform = False    
+        got_transform = True 
         while not got_transform:
             try:
                 ## todo make sure transform time matches pose time?
@@ -338,18 +341,13 @@ if __name__ == '__main__':
                                                              transform.transform.rotation.y, 
                                                              transform.transform.rotation.z).matrix()
                 
-                dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
-                auv_isam.dvl_transform = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
-                                                             dvl_transform.transform.rotation.x, 
-                                                             dvl_transform.transform.rotation.y, 
-                                                             dvl_transform.transform.rotation.z).matrix()
                 got_transform = True
             
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
                 print("exception in transform lookup loop")
                 continue
 
-        got_transform = False    
+        got_transform = True    
         while not got_transform:
             try:
                 dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
