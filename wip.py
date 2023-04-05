@@ -153,7 +153,9 @@ class AUV_ISAM:
         #print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
         #print("transform: ", self.g_transform)
         #print("transformed gravity ", np.dot(self.g_transform, self.g))
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform, self.g)
+        if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
+            print(data)
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform.T, self.g)
         #print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
@@ -284,6 +286,8 @@ class AUV_ISAM:
                 # insert new velocity, which is wrong
                 if self.mav_vel is not None:
                     #print("adding vel ", self.mav_vel)
+                    # rotate?
+                    # try removing this and letting isam fill in
                     self.initialEstimate.insert(V(self.timestamp), vector3(self.mav_vel['x'], self.mav_vel['y'], self.mav_vel['z']))
                 else:
                     #print("not adding vel", self.mav_vel)
@@ -326,6 +330,7 @@ if __name__ == '__main__':
                 ## todo make sure transform time matches pose time?
                 transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
                 got_transform = True
+                auv_isam.dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
                 auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
                                                              transform.transform.rotation.x, 
                                                              transform.transform.rotation.y, 
@@ -334,7 +339,6 @@ if __name__ == '__main__':
                 print("exception in transform lookup loop")
                 continue
 
-        auv_isam.dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
         # auv_isam.g_transform = gtsam.Rot3.Quaternion(1.0, 0.0, 0.0, 0.0).matrix()
         if auv_isam.odom is not None:
             auv_isam.update()
