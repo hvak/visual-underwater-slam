@@ -344,10 +344,6 @@ if __name__ == '__main__':
                 print("exception in transform lookup loop")
                 continue
 
-<<<<<<< HEAD
-        # auv_isam.g_transform = gtsam.Rot3.Quaternion(1.0, 0.0, 0.0, 0.0).matrix()
-=======
->>>>>>> 854cbb1 (move transform reading)
         if auv_isam.odom is not None:
             auv_isam.update()
 
