@@ -337,6 +337,7 @@ if __name__ == '__main__':
                                                              transform.transform.rotation.x, 
                                                              transform.transform.rotation.y, 
                                                              transform.transform.rotation.z).matrix()
+                
                 dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
                 auv_isam.dvl_transform = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
                                                              dvl_transform.transform.rotation.x, 
@@ -346,6 +347,20 @@ if __name__ == '__main__':
             
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
                 print("exception in transform lookup loop")
+                continue
+
+        got_transform = False    
+        while not got_transform:
+            try:
+                dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
+                auv_isam.dvl_transform = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
+                                                             dvl_transform.transform.rotation.x, 
+                                                             dvl_transform.transform.rotation.y, 
+                                                             dvl_transform.transform.rotation.z).matrix()
+                got_transform = True
+            
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                print("exception in DVL transform lookup loop")
                 continue
 
         if auv_isam.odom is not None:
