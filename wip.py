@@ -329,8 +329,7 @@ if __name__ == '__main__':
             try:
                 ## todo make sure transform time matches pose time?
                 transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
-                got_transform = True
-                auv_isam.dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
+                
                 auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
                                                              transform.transform.rotation.x, 
                                                              transform.transform.rotation.y, 
@@ -340,6 +339,8 @@ if __name__ == '__main__':
                                                              dvl_transform.transform.rotation.x, 
                                                              dvl_transform.transform.rotation.y, 
                                                              dvl_transform.transform.rotation.z).matrix()
+                got_transform = True
+            
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
                 print("exception in transform lookup loop")
                 continue
