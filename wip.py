@@ -292,7 +292,7 @@ class AUV_ISAM:
                     #print("adding vel ", self.mav_vel)
                     # rotate?
                     # try removing this and letting isam fill in
-                    self.initialEstimate.insert(V(self.timestamp), vector3(self.mav_vel['x'], self.mav_vel['y'], self.mav_vel['z']))
+                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
                 else:
                     #print("not adding vel", self.mav_vel)
                     self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
