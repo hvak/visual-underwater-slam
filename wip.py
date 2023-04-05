@@ -204,6 +204,7 @@ class AUV_ISAM:
         Calculate the error betwen the velocity prediction and the velocity measurement
         ana notes: retaining bagoren et al's jacobian and typing (list, optional keywords)
         """
+        
         key = this.keys()[0] # key = timestamp
         vel_estimate = values.atPoint3(V(key)) # get previous estimates from graph
         pose_estimate = values.atPose3(X(key))
@@ -257,7 +258,9 @@ class AUV_ISAM:
         dvlFactor = self.create_dvl_factor()
         # depthFactor = self.create_depth_factor()
         # orbFactor = self.create_orb_factor()
-        factors = [imuFactor, dvlFactor]
+        # factors = [imuFactor, dvlFactor]
+        factors = [imuFactor]
+
         return factors
 
     def update(self):
