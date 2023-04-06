@@ -14,6 +14,8 @@ def voc_load(voc_file, max_words=1000):
     for i in range(max_words):
         line = v_file.readline()
         line = line.strip(' ').split(' ')
+        line = [val for val in line if val]
+        #print(line)
         line = [int(val) for val in line[:32]]
         
         #score = float(line[32])
@@ -55,7 +57,7 @@ def filter_descriptors(keypoints, descriptors, thresh=20):
     return filtered_kp, filtered_desc
 
 if __name__ == '__main__':
-    words, voc_descriptors = voc_load("underwater_orb_vocab.txt", max_words=83468)
+    words, voc_descriptors = voc_load("underwater_orb_gray.txt", max_words=38238)
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     fontScale = 1
