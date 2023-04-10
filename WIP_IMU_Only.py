@@ -143,7 +143,7 @@ class AUV_ISAM:
         print("linear accel raw", np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose())
         #print("transform: ", self.g_transform)
         print("transformed gravity ", np.dot(self.g_transform, self.g))
-        measAcc = np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose() - np.flip(np.dot(self.g_transform, self.g))
+        measAcc = np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose() - np.dot(self.g_transform, self.g)
         print("final accel with gravity removed", measAcc)
         measOmega = np.array([self.IMUDATA[:, 3], self.IMUDATA[:, 4], self.IMUDATA[:, 5]]).transpose()
         #print('here', measAcc)
@@ -245,6 +245,7 @@ class AUV_ISAM:
         initial.insert(BIAS_KEY, self.bias)
         velocity = vector3(0,0,0)
         for i in range(poses.shape[0]):
+            print(i)
             #Prior Estimate
             currPose = poses[i, :]
             #print(each)
@@ -253,15 +254,23 @@ class AUV_ISAM:
             #print(rot)
             pose = gtsam.Pose3(rot, t)
             if(i == 0):
-                PRIOR_NOISE = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
-                graph.add(gtsam.PriorFactorPose3(0, pose, PRIOR_NOISE))
+                PRIOR_NOISE_POSE = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
+                PRIOR_NOISE_VEl = gtsam.noiseModel.Isotropic.Sigma(3, 0.25)
+                graph.add(gtsam.PriorFactorPose3(X(i), pose, PRIOR_NOISE_POSE))
+                graph.add(gtsam.PriorFactorVector(V(i), velocity, PRIOR_NOISE_VEl))
+                print("Insert at pose:", X(i))
+                print("Insert at velocity:", V(i))
                 initial.insert(X(i), pose)
                 initial.insert(V(i), velocity)
             else:
-                initial.insert(X(i), pose)
-                initial.insert(V(i), velocity)
                 imuFactor = self.create_imu_factor(i)
                 graph.push_back(imuFactor)
+                print("Insert at pose:", X(i))
+                print("Insert at velocity:", V(i))
+                initial.insert(X(i), pose)
+                initial.insert(V(i), velocity)
+
+            self.accum.resetIntegration()
         return
 
 if __name__ == '__main__':
