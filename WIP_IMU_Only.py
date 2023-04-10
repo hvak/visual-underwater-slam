@@ -67,8 +67,8 @@ grav = 9.81
 class AUV_ISAM:
     def __init__(self):
         #Import CSV Data
-        self.IMUDATA = importCSV('23_compressed_merged-mavros-imu-data.csv', 'IMU')
-        self.ODOMDATA = importCSV('23_compressed_merged-dvl-local_position.csv', 'ODOM')
+        self.IMUDATA = importCSV('~/Downloads/23_compressed_merged-mavros-imu-data.csv', 'IMU')
+        self.ODOMDATA = importCSV('~/Downloads/23_compressed_merged-dvl-local_position.csv', 'ODOM')
 
         print(self.IMUDATA.shape)
         print(self.ODOMDATA.shape)
@@ -182,10 +182,10 @@ class AUV_ISAM:
     
     def get_factors(self):
         imuFactor = self.create_imu_factor()
-        #dvlFactor = self.create_dvl_factor()
+        dvlFactor = self.create_dvl_factor()
         # depthFactor = self.create_depth_factor()
         # orbFactor = self.create_orb_factor()
-        factors = [imuFactor]#, dvlFactor]
+        factors = [imuFactor, dvlFactor]
         return factors
     
     ################################
@@ -254,7 +254,7 @@ class AUV_ISAM:
             pose = gtsam.Pose3(rot, t)
             if(i == 0):
                 PRIOR_NOISE = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
-                graph.add(gtsam.PriorFactorPose3(0, pose, PRIOR_NOISE))
+                graph.add(gtsam.PriorFactorPose3(X(0), pose, PRIOR_NOISE))
                 initial.insert(X(i), pose)
                 initial.insert(V(i), velocity)
             else:
@@ -262,6 +262,7 @@ class AUV_ISAM:
                 initial.insert(V(i), velocity)
                 imuFactor = self.create_imu_factor(i)
                 graph.push_back(imuFactor)
+                
         return
 
 if __name__ == '__main__':
@@ -302,7 +303,9 @@ if __name__ == '__main__':
     graph1 = gtsam.NonlinearFactorGraph()
     initial1 = gtsam.Values()
     auv_isam.batchSolve(graph1, initial1)
-    results = gtsam.GaussNewtonOptimizer(graph1, initial1).optimize()
-    points = constr3DPoints(results)
-    ax.plot3D(points[:, 0], points[:, 1], points[:, 2], 'orange')
+    print("\nInitial Estimate:\n{}".format(initial1))  # print
+    results = gtsam.LevenbergMarquardtOptimizer(graph1, initial1, gtsam.LevenbergMarquardtParams()).optimize()
+    plot.plot_trajectory(1, results)
+    #points = constr3DPoints(results)
+    #ax.plot3D(points[:, 0], points[:, 1], points[:, 2], 'orange')
     plt.show()
