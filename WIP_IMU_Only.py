@@ -50,13 +50,14 @@ def vector3(x, y, z):
 def importCSV(FILEPATH, type):
     csv = pd.read_csv(FILEPATH).to_numpy()
     if ('IMU' == type):
-        data = csv[:, 5:9]
+        data = csv[:, 14:17]
         data = np.append(data, csv[:, 10:13], axis=1)
     elif('ODOM' == type):
         data = csv[:, 5:12]
-    print(data[0])
+    #print(data[0])
     return data
 
+BIAS_KEY = B(0)
 ###############################
 #
 #   ISAM Class
@@ -66,8 +67,11 @@ grav = 9.81
 class AUV_ISAM:
     def __init__(self):
         #Import CSV Data
-        self.IMU = importCSV('23_compressed_merged-mavros-imu-data.csv', 'IMU')
-        self.ODOM = importCSV('23_compressed_merged-dvl-local_position.csv', 'ODOM')
+        self.IMUDATA = importCSV('23_compressed_merged-mavros-imu-data.csv', 'IMU')
+        self.ODOMDATA = importCSV('23_compressed_merged-dvl-local_position.csv', 'ODOM')
+
+        print(self.IMUDATA.shape)
+        print(self.ODOMDATA.shape)
 
         self.PARAMS, self.BIAS_COVARIANCE, self.DELTA = self.preintegration_parameters()
         self.pose_0 = gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [0, 0, 0])
@@ -84,12 +88,16 @@ class AUV_ISAM:
         # Add imu priors
         self.biasKey = B(0)
         self.biasnoise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
-        self.biasprior = PriorFactorConstantBias(self.biasKey, gtsam.imuBias.ConstantBias(),self. biasnoise)
+        self.biasprior = PriorFactorConstantBias(self.biasKey, gtsam.imuBias.ConstantBias(),self.biasnoise)
         self.graph.push_back(self.biasprior)
         self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
         self.velnoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
 
-        self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS)
+        accBias = np.array([-0.3, 0.1, 0.2])
+        gyroBias = np.array([0.1, 0.3, -0.1])
+        self.bias = gtsam.imuBias.ConstantBias(accBias, gyroBias)
+        self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS, self.bias)
+        self.imu = None
 
         # Calculate with correct initial velocity
         self.n_velocity = vector3(0, 0, 0)
@@ -101,8 +109,10 @@ class AUV_ISAM:
         self.mav_vel = None
         self.odom = None
 
-        self.g_transform = None
+        self.g_transform = -np.eye(3)
         self.g = vector3(0, 0, -grav)
+
+        
 
 
     def preintegration_parameters(self):
@@ -110,8 +120,8 @@ class AUV_ISAM:
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
         PARAMS = gtsam.PreintegrationParams.MakeSharedU(grav)
         I = np.eye(3)
-        PARAMS.setAccelerometerCovariance(I * 0.1)
-        PARAMS.setGyroscopeCovariance(I * 0.1)
+        PARAMS.setAccelerometerCovariance(I * 8.999999999999999e-08)
+        PARAMS.setGyroscopeCovariance(I * 1.2184696791468346e-07)
         PARAMS.setIntegrationCovariance(I * 0.1)
         PARAMS.setUse2ndOrderCoriolis(False)
         PARAMS.setOmegaCoriolis(vector3(0, 0, 0))
@@ -130,27 +140,25 @@ class AUV_ISAM:
     
     def update_imu(self, data):
         print("IMU Update")
-        #print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
+        print("linear accel raw", np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose())
         #print("transform: ", self.g_transform)
-        #print("transformed gravity ", np.dot(self.g_transform, self.g))
-        if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
-            print(data)
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.flip(np.dot(self.g_transform, self.g))
+        print("transformed gravity ", np.dot(self.g_transform, self.g))
+        measAcc = np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose() - np.flip(np.dot(self.g_transform, self.g))
         print("final accel with gravity removed", measAcc)
-        measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
+        measOmega = np.array([self.IMUDATA[:, 3], self.IMUDATA[:, 4], self.IMUDATA[:, 5]]).transpose()
         #print('here', measAcc)
         self.imu = np.array([measAcc, measOmega])
         return
     
     def update_odom(self, data):
         #print("Odom Update")
-        self.odom = {"x": data.pose.pose.position.x, 
-                     "y": data.pose.pose.position.y,
-                     "z": data.pose.pose.position.z,
-                     "i": data.pose.pose.orientation.x,
-                     "j": data.pose.pose.orientation.y,
-                     "k": data.pose.pose.orientation.z, 
-                     "q": data.pose.pose.orientation.w}
+        self.odom = {"x": self.ODOMDATA[:, 0], 
+                     "y": self.ODOMDATA[:, 1],
+                     "z": self.ODOMDATA[:, 2],
+                     "i": self.ODOMDATA[:, 3],
+                     "j": self.ODOMDATA[:, 4],
+                     "k": self.ODOMDATA[:, 5], 
+                     "q": self.ODOMDATA[:, 6]}
         return
     
     def update_mavros_vel(self, data):
@@ -166,10 +174,10 @@ class AUV_ISAM:
     #
     ################################
     
-    def create_imu_factor(self):
-        delta_t = .01
-        self.accum.integrateMeasurement(self.imu[0], self.imu[1], delta_t)
-        imuFactor = ImuFactor(X(self.timestamp - 1), V(self.timestamp - 1), X(self.timestamp), V(self.timestamp), self.biasKey, self.accum)
+    def create_imu_factor(self, index):
+        delta_t = .2
+        self.accum.integrateMeasurement(self.imu[0, index, :], self.imu[1, index, :], delta_t)
+        imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
         return imuFactor
     
     def get_factors(self):
@@ -230,6 +238,31 @@ class AUV_ISAM:
             self.graph = NonlinearFactorGraph()
             self.initialEstimate.clear()
             self.timestamp += 1
+    
+    def batchSolve(self, graph, initial):
+        poses = self.ODOMDATA
+        self.update_imu(None)
+        initial.insert(BIAS_KEY, self.bias)
+        velocity = vector3(0,0,0)
+        for i in range(poses.shape[0]):
+            #Prior Estimate
+            currPose = poses[i, :]
+            #print(each)
+            rot = gtsam.Rot3.Quaternion(currPose[6], currPose[3], currPose[4], currPose[5])
+            t = gtsam.Point3(currPose[0], currPose[1], currPose[2])
+            #print(rot)
+            pose = gtsam.Pose3(rot, t)
+            if(i == 0):
+                PRIOR_NOISE = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
+                graph.add(gtsam.PriorFactorPose3(0, pose, PRIOR_NOISE))
+                initial.insert(X(i), pose)
+                initial.insert(V(i), velocity)
+            else:
+                initial.insert(X(i), pose)
+                initial.insert(V(i), velocity)
+                imuFactor = self.create_imu_factor(i)
+                graph.push_back(imuFactor)
+        return
 
 if __name__ == '__main__':
     rospy.init_node('data_listener', anonymous=True)
@@ -244,26 +277,32 @@ if __name__ == '__main__':
 
     auv_isam = AUV_ISAM()
 
-    while not rospy.is_shutdown():
-        #auv_isam.g_transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
-        got_transform = False    
-        while not got_transform:
-            try:
-                ## todo make sure transform time matches pose time?
-                transform = tfBuffer.lookup_transform('base_link', 'map', rospy.Time(0))
-                auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
-                                                             transform.transform.rotation.x, 
-                                                             transform.transform.rotation.y, 
-                                                             transform.transform.rotation.z).matrix()
+    # while not rospy.is_shutdown():
+    #     #auv_isam.g_transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
+    #     got_transform = False    
+    #     while not got_transform:
+    #         try:
+    #             ## todo make sure transform time matches pose time?
+    #             transform = tfBuffer.lookup_transform('base_link', 'map', rospy.Time(0))
+    #             auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
+    #                                                          transform.transform.rotation.x, 
+    #                                                          transform.transform.rotation.y, 
+    #                                                          transform.transform.rotation.z).matrix()
 
-                got_transform = True
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-                #print("exception in transform lookup loop")
-                continue
+    #             got_transform = True
+    #         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+    #             #print("exception in transform lookup loop")
+    #             continue
 
-        if auv_isam.odom is not None:
-            auv_isam.update()
+    #     if auv_isam.odom is not None:
+    #         auv_isam.update()
 
-            #plt.show()
-        rospy.sleep(0.5)
+    #         #plt.show()
+    #     rospy.sleep(0.5)
+    graph1 = gtsam.NonlinearFactorGraph()
+    initial1 = gtsam.Values()
+    auv_isam.batchSolve(graph1, initial1)
+    results = gtsam.GaussNewtonOptimizer(graph1, initial1).optimize()
+    points = constr3DPoints(results)
+    ax.plot3D(points[:, 0], points[:, 1], points[:, 2], 'orange')
     plt.show()
