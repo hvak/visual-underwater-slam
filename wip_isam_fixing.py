@@ -93,14 +93,14 @@ class AUV_ISAM:
         self.biasnoise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
         self.biasprior = PriorFactorConstantBias(self.biasKey, gtsam.imuBias.ConstantBias(),self. biasnoise)
         self.graph.push_back(self.biasprior)
-        self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
+        #self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
         self.velnoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
 
         # Calculate with correct initial velocity
         self.n_velocity = vector3(0, 0, 0)
         self.velprior = PriorFactorVector(V(0), self.n_velocity, self.velnoise)
         self.graph.push_back(self.velprior)
-        self.initialEstimate.insert(V(0), self.n_velocity)
+        #self.initialEstimate.insert(V(0), self.n_velocity)
 
         self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS)
         accBias = np.array([-0.3, 0.1, 0.2])
@@ -283,47 +283,47 @@ class AUV_ISAM:
     def update(self):
 
         # Simulate poses and imu measurements, adding them to the factor graph
-            t = self.timestamp * self.delta_t  # simulation time
-            if self.timestamp == 0:  # First time add two poses
-                self.initialEstimate.insert(X(0), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
-                self.initialEstimate.insert(X(1), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
-            elif self.timestamp >= 2:  # Add more poses as necessary
-                self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
+        t = self.timestamp * self.delta_t  # simulation time
+        if self.timestamp == 0:  # First time add two poses
+            self.initialEstimate.insert(X(0), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
+            self.initialEstimate.insert(X(1), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
+        elif self.timestamp >= 2:  # Add more poses as necessary
+            self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
 
-            if self.timestamp > 0:
-                # Add Bias variables periodically
-                if self.timestamp % 5 == 0:
-                    self.biasKey += 1
-                    factor = BetweenFactorConstantBias(
-                        self.biasKey - 1, self.biasKey, gtsam.imuBias.ConstantBias(), self.BIAS_COVARIANCE)
-                    self.graph.add(factor)
-                    self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
+        if self.timestamp > 0:
+            # Add Bias variables periodically
+            if self.timestamp % 5 == 0:
+                self.biasKey += 1
+                factor = BetweenFactorConstantBias(
+                    self.biasKey - 1, self.biasKey, gtsam.imuBias.ConstantBias(), self.BIAS_COVARIANCE)
+                self.graph.add(factor)
+                self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
 
-                # Add Factors
-                for factor in self.get_factors():
-                    self.graph.add(factor)
+            # Add Factors
+            for factor in self.get_factors():
+                self.graph.add(factor)
 
-                # insert new velocity, which is wrong
-                if self.mav_vel is not None:
-                    #print("adding vel ", self.mav_vel)
-                    # rotate?
-                    # try removing this and letting isam fill in
-                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
-                else:
-                    #print("not adding vel", self.mav_vel)
-                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
-                self.accum.resetIntegration()
+            # insert new velocity, which is wrong
+            if self.mav_vel is not None:
+                #print("adding vel ", self.mav_vel)
+                # rotate?
+                # try removing this and letting isam fill in
+                self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
+            else:
+                #print("not adding vel", self.mav_vel)
+                self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
+            self.accum.resetIntegration()
 
-            # Incremental solution
-            self.isam.update(self.graph, self.initialEstimate)
-            result = self.isam.calculateEstimate()
-            #plot.plot_incremental_trajectory(0, result, start=self.timestamp, scale=3, time_interval=0.01)
-            #plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.5)
+        # Incremental solution
+        self.isam.update(self.graph, self.initialEstimate)
+        result = self.isam.calculateEstimate()
+        plot.plot_incremental_trajectory(0, result, start=self.timestamp, scale=3, time_interval=0.01)
+        plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.5)
 
-            # reset
-            self.graph = NonlinearFactorGraph()
-            self.initialEstimate.clear()
-            # self.timestamp += 1
+        # reset
+        self.graph = NonlinearFactorGraph()
+        self.initialEstimate.clear()
+        # self.timestamp += 1
 
     def create_imu_factor_batch(self, index):
         delta_t = .2
@@ -334,11 +334,11 @@ class AUV_ISAM:
     def batchSolve(self):
         #poses = self.ODOMDATA
         # self.update_imu(None)
-        self.batch_initial.insert(self.biasKey, self.bias)
+        self.initialEstimate.insert(self.biasKey, self.bias)
         velocity = vector3(0,0,0)
-        for i in range(len(self.odom_accum)):
+        for i in range(self.timestamp):
             #Prior Estimate
-            currPose = self.odom_accum[i]
+            currPose = self.odom_accum[i + round(i * (len(self.odom_accum) / self.timestamp - 1))]
             #print(each)
             rot = gtsam.Rot3.Quaternion(currPose['q'], currPose['i'], currPose['j'], currPose['k'])
             t = gtsam.Point3(currPose['x'], currPose['y'], currPose['z'])
@@ -347,11 +347,11 @@ class AUV_ISAM:
             if i == 0:
                 PRIOR_NOISE = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
                 self.batch_graph.add(gtsam.PriorFactorPose3(X(0), pose, PRIOR_NOISE))
-                self.batch_initial.insert(X(i), pose)
-                self.batch_initial.insert(V(i), velocity)
+                self.initialEstimate.insert(X(i), pose)
+                self.initialEstimate.insert(V(i), velocity)
             else:
-                self.batch_initial.insert(X(i), pose)
-                self.batch_initial.insert(V(i), velocity)
+                self.initialEstimate.insert(X(i), pose)
+                self.initialEstimate.insert(V(i), velocity)
                 imuFactor = self.create_imu_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
                 
@@ -418,15 +418,17 @@ if __name__ == '__main__':
                 # batch solution
                 auv_isam.do_accum = False
                 auv_isam.batchSolve()
-                results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
+                results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.initialEstimate, gtsam.LevenbergMarquardtParams()).optimize()
                 plot.plot_trajectory(1, results)
-                plt.show()
+                #plt.show()
+                #auv_isam.initialEstimate.clear()
                 auv_isam.timestamp += 1
-                exit()
 
             else:
+                if auv_isam.timestamp == 201: auv_isam.timestamp -= 1
                 auv_isam.update()
                 auv_isam.timestamp += 1
+                #plt.show()
 
             #plt.show()
         rospy.sleep(0.5)
