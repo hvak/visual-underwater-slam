@@ -113,9 +113,11 @@ class AUV_ISAM:
         self.dvl_model = gtsam.noiseModel.Isotropic.Sigma(3, 0.1) ## Bagoren et al
 
 
-        self.g_transform = None
+        self.g_transform = np.eye(3)
         self.grav = 9.81
         self.g = vector3(0, 0, -self.grav)
+        self.prevPose = None
+        self.currPose = None
 
 
     def preintegration_parameters(self):
@@ -150,13 +152,13 @@ class AUV_ISAM:
     ################################
     
     def update_imu(self, data):
-        print("IMU Update")
+        #print("IMU Update")
         #print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
         #print("transform: ", self.g_transform)
         #print("transformed gravity ", np.dot(self.g_transform, self.g))
         if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
             print(data)
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) #- np.dot(self.g_transform.T, self.g)
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform, self.g)
         #print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
@@ -265,50 +267,60 @@ class AUV_ISAM:
         return factors
 
     def update(self):
-
+        print(self.timestamp)
         # Simulate poses and imu measurements, adding them to the factor graph
-            t = self.timestamp * self.delta_t  # simulation time
-            if self.timestamp == 0:  # First time add two poses
-                self.initialEstimate.insert(X(0), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
-                self.initialEstimate.insert(X(1), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
-            elif self.timestamp >= 2:  # Add more poses as necessary
-                self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
+        t = self.timestamp * self.delta_t  # simulation time
+        if self.timestamp == 0:  # First time add two poses
+            init_pose = gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']])
+            init_vel = vector3(0,0,0)
+            self.initialEstimate.insert(X(0), init_pose)
+            self.initialEstimate.insert(X(1), init_pose)
 
-            if self.timestamp > 0:
-                # Add Bias variables periodically
-                if self.timestamp % 5 == 0:
-                    self.biasKey += 1
-                    factor = BetweenFactorConstantBias(
-                        self.biasKey - 1, self.biasKey, gtsam.imuBias.ConstantBias(), self.BIAS_COVARIANCE)
-                    self.graph.add(factor)
-                    self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
+            self.prevPose = self.initialEstimate.atPose3(X(0))
+            self.currPose = self.initialEstimate.atPose3(X(0))
 
-                # Add Factors
-                for factor in self.get_factors():
-                    self.graph.add(factor)
+        elif self.timestamp >= 2:  # Add more poses as necessary
+            self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
+            self.currPose = self.initialEstimate.atPose3(X(self.timestamp))
 
-                # insert new velocity, which is wrong
-                if self.mav_vel is not None:
-                    #print("adding vel ", self.mav_vel)
-                    # rotate?
-                    # try removing this and letting isam fill in
-                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
-                else:
-                    #print("not adding vel", self.mav_vel)
-                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
-                self.accum.resetIntegration()
+        if self.timestamp > 0:
+            # Add Bias variables periodically
+            if self.timestamp % 5 == 0:
+                self.biasKey += 1
+                factor = BetweenFactorConstantBias(
+                    self.biasKey - 1, self.biasKey, gtsam.imuBias.ConstantBias(), self.BIAS_COVARIANCE)
+                self.graph.add(factor)
+                self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
 
-            # Incremental solution
-            self.isam.update(self.graph, self.initialEstimate)
+            # Add Factors
+            for factor in self.get_factors():
+                self.graph.add(factor)
+
+            # insert new velocity, which is wrong
+            if self.mav_vel is not None:
+                self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
+            else:
+                #print("not adding vel", self.mav_vel)
+                self.initialEstimate.insert(V(self.timestamp), vector3(self.currPose.x()-self.prevPose.x(),
+                                                                       self.currPose.y()-self.prevPose.y(),
+                                                                       self.currPose.z()-self.prevPose.z()))
+
+            self.accum.resetIntegration()
+
+        # Incremental solution
+        self.isam.update(self.graph, self.initialEstimate)
+        self.prevPose = self.currPose
+        if (self.timestamp > 200):
             result = self.isam.calculateEstimate()
             plot.plot_incremental_trajectory(0, result,
                                             start=self.timestamp, scale=3, time_interval=0.01)
-            plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.5)
+            pose_i = gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']])
+            plot.plot_pose3(fignum=0, pose=pose_i, axis_length=0.5)
 
-            # reset
-            self.graph = NonlinearFactorGraph()
-            self.initialEstimate.clear()
-            self.timestamp += 1
+        # reset
+        self.graph = NonlinearFactorGraph()
+        self.initialEstimate.clear()
+        self.timestamp += 1
 
     
 
