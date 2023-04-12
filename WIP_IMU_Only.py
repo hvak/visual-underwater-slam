@@ -5,7 +5,7 @@ import rospy
 #from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
-from waterlinked_a50_ros_driver.msg import DVL
+# from waterlinked_a50_ros_driver.msg import DVL
 from typing import Optional, List
 import sys
 import tf2_ros
@@ -73,6 +73,7 @@ class AUV_ISAM:
         self.ODOMDATA = importCSV('23_compressed_merged-dvl-local_position.csv', 'ODOM')
 
         print(self.IMUDATA.shape)
+        print(self.IMUDATA[:10])
         print(self.ODOMDATA.shape)
 
         self.PARAMS, self.BIAS_COVARIANCE, self.DELTA = self.preintegration_parameters()
@@ -100,6 +101,7 @@ class AUV_ISAM:
         self.bias = gtsam.imuBias.ConstantBias(accBias, gyroBias)
         self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS, self.bias)
         self.imu = None
+        self.imu_transforms = []
 
         # Calculate with correct initial velocity
         self.n_velocity = vector3(0, 0, 0)
@@ -146,16 +148,17 @@ class AUV_ISAM:
         print("IMU Update")
         print("linear accel raw", np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose())
 
-        g_transform = gtsam.Rot3.Quaternion(self.IMUDATA[:, 21],
-                                            self.IMUDATA[:, 18],
-                                            self.IMUDATA[:, 19],
-                                            self.IMUDATA[:, 20]).matrix()
-        print("transforms for gravity shape:", g_transform.shape)
+        print(self.IMUDATA[0:5])
+        for i in range(self.IMUDATA.shape[0]):
+            self.imu_transforms.append( gtsam.Rot3.Quaternion(self.IMUDATA[i, 9],
+                                                           self.IMUDATA[i, 6],
+                                                           self.IMUDATA[i, 7],
+                                                           self.IMUDATA[i, 8]).matrix() )
 
-
-        #print("transform: ", self.g_transform)
-        print("transformed gravity ", np.dot(self.g_transform, self.g))
-        measAcc = np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose() - np.flip(np.dot(self.g_transform, self.g))
+        self.imu_transforms = np.array(self.imu_transforms)
+        print("transform: ", self.imu_transforms.shape)
+        # print("transformed gravity ", np.dot(self.g_transform, self.g)
+        measAcc = np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose() - np.flip(np.dot(self.imu_transforms, self.g))
         print("final accel with gravity removed", measAcc)
         measOmega = np.array([self.IMUDATA[:, 3], self.IMUDATA[:, 4], self.IMUDATA[:, 5]]).transpose()
         #print('here', measAcc)
