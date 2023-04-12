@@ -67,8 +67,8 @@ grav = 9.81
 class AUV_ISAM:
     def __init__(self):
         #Import CSV Data
-        self.IMUDATA = importCSV('~/Downloads/23_compressed_merged-mavros-imu-data.csv', 'IMU')
-        self.ODOMDATA = importCSV('~/Downloads/23_compressed_merged-dvl-local_position.csv', 'ODOM')
+        self.IMUDATA = importCSV('23_compressed_merged-mavros-imu-data.csv', 'IMU')
+        self.ODOMDATA = importCSV('23_compressed_merged-dvl-local_position.csv', 'ODOM')
 
         print(self.IMUDATA.shape)
         print(self.ODOMDATA.shape)
