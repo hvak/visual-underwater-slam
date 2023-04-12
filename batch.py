@@ -4,6 +4,7 @@ from __future__ import print_function
 
 
 import rospy
+import rosnode
 #from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
@@ -122,7 +123,7 @@ class AUV_ISAM:
         self.g = vector3(0, 0, -self.grav)
 
         # batch
-        self.do_accum = False
+        self.do_accum = True
         self.odom_accum = []
         self.imu_accum = []
         self.batch_graph = gtsam.NonlinearFactorGraph()
@@ -338,8 +339,6 @@ class AUV_ISAM:
         self.batch_initial.insert(self.biasKey, self.bias)
         velocity = vector3(0,0,0)
         for i in range(len(self.odom_accum)):
-            temp_values = gtsam.Values()
-            temp_graph =  gtsam.NonlinearFactorGraph()
             #Prior Estimate
             currPose = self.odom_accum[i]
             #print(each)
@@ -348,27 +347,15 @@ class AUV_ISAM:
             #print(rot)
             pose = gtsam.Pose3(rot, t)
             if i == 0:
-                temp_values.insert(self.biasKey, self.bias)
-
                 PRIOR_NOISE = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
                 self.batch_graph.add(gtsam.PriorFactorPose3(X(0), pose, PRIOR_NOISE))
                 self.batch_initial.insert(X(i), pose)
                 self.batch_initial.insert(V(i), velocity)
-                temp_values.insert(X(i), pose)
-                temp_values.insert(V(i), velocity)
-                temp_graph.add(gtsam.PriorFactorPose3(X(0), pose, PRIOR_NOISE))
             else:
                 self.batch_initial.insert(X(i), pose)
                 self.batch_initial.insert(V(i), velocity)
                 imuFactor = self.create_imu_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
-                temp_values.insert(X(i), pose)
-                temp_values.insert(V(i), velocity)
-                temp_graph.push_back(imuFactor)
-
-
-            # add factors
-            self.isam.update(temp_graph, temp_values)   
                 
         return
 
@@ -423,29 +410,17 @@ if __name__ == '__main__':
                 print("exception in DVL transform lookup loop")
                 continue
 
-        if auv_isam.odom is not None:
-
-            print(auv_isam.timestamp)
-
-            if auv_isam.timestamp < 50:
-                # accum
-                auv_isam.do_accum = True
-            elif auv_isam.timestamp == 50:
-                # batch solution
-                auv_isam.do_accum = False
-                auv_isam.createBatch()
-                results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
-                print('complete')
-                # auv_isam.isam.update(auv_isam.batch_graph, results)
-                plot.plot_trajectory(1, results)
-                plt.show()
-                exit()
-
-            else:
-                auv_isam.update()
+        if 'play' not in '\t'.join(rosnode.get_node_names()):
+           
+            auv_isam.do_accum = True
+            auv_isam.createBatch()
+            results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
 
             auv_isam.timestamp += 1
-            #plt.show()
-        rospy.sleep(0.5)
 
+            break
+        
+        rospy.sleep(0.5)
+    
+    plot.plot_trajectory(1, results)
     plt.show()
