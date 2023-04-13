@@ -5,7 +5,7 @@ import rospy
 #from uslam.isam import AUV_ISAM
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
-from waterlinked_a50_ros_driver.msg import DVL
+# from waterlinked_a50_ros_driver.msg import DVL
 from typing import Optional, List
 import sys
 import tf2_ros
@@ -52,6 +52,8 @@ def importCSV(FILEPATH, type):
     if ('IMU' == type):
         data = csv[:, 14:17]
         data = np.append(data, csv[:, 10:13], axis=1)
+        data = np.append(data, csv[:, 18:25], axis=1) ## quaternion and translation from transform
+
     elif('ODOM' == type):
         data = csv[:, 5:12]
     #print(data[0])
@@ -67,10 +69,11 @@ grav = 9.81
 class AUV_ISAM:
     def __init__(self):
         #Import CSV Data
-        self.IMUDATA = importCSV('23_compressed_merged-mavros-imu-data.csv', 'IMU')
+        self.IMUDATA = importCSV('23_compressed_merged-mavros-imu-TRANSFORMS.csv', 'IMU')
         self.ODOMDATA = importCSV('23_compressed_merged-dvl-local_position.csv', 'ODOM')
 
         print(self.IMUDATA.shape)
+        print(self.IMUDATA[:10])
         print(self.ODOMDATA.shape)
 
         self.PARAMS, self.BIAS_COVARIANCE, self.DELTA = self.preintegration_parameters()
@@ -98,6 +101,7 @@ class AUV_ISAM:
         self.bias = gtsam.imuBias.ConstantBias(accBias, gyroBias)
         self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS, self.bias)
         self.imu = None
+        self.imu_transforms = []
 
         # Calculate with correct initial velocity
         self.n_velocity = vector3(0, 0, 0)
@@ -112,6 +116,8 @@ class AUV_ISAM:
         self.g_transform = -np.eye(3)
         self.g = vector3(0, 0, -grav)
 
+
+        self.odom_accum = []
         
 
 
@@ -141,9 +147,18 @@ class AUV_ISAM:
     def update_imu(self, data):
         print("IMU Update")
         print("linear accel raw", np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose())
-        #print("transform: ", self.g_transform)
-        print("transformed gravity ", np.dot(self.g_transform, self.g))
-        measAcc = np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose() - np.flip(np.dot(self.g_transform, self.g))
+
+        print(self.IMUDATA[0:5])
+        for i in range(self.IMUDATA.shape[0]):
+            self.imu_transforms.append( gtsam.Rot3.Quaternion(self.IMUDATA[i, 9],
+                                                           self.IMUDATA[i, 6],
+                                                           self.IMUDATA[i, 7],
+                                                           self.IMUDATA[i, 8]).matrix() )
+
+        self.imu_transforms = np.array(self.imu_transforms)
+        print("transform: ", self.imu_transforms.shape)
+        # print("transformed gravity ", np.dot(self.g_transform, self.g)
+        measAcc = np.array([self.IMUDATA[:, 0], self.IMUDATA[:, 1], self.IMUDATA[:, 2]]).transpose() - np.flip(np.dot(self.imu_transforms, self.g))
         print("final accel with gravity removed", measAcc)
         measOmega = np.array([self.IMUDATA[:, 3], self.IMUDATA[:, 4], self.IMUDATA[:, 5]]).transpose()
         #print('here', measAcc)
@@ -231,8 +246,8 @@ class AUV_ISAM:
             self.isam.update(self.graph, self.initialEstimate)
             result = self.isam.calculateEstimate()
             plot.plot_incremental_trajectory(0, result,
-                                            start=self.timestamp, scale=3, time_interval=0.01)
-            plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.5)
+                                            start=self.timestamp, scale=1, time_interval=0.01, axis_length=10)
+            # plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.1)
 
             # reset
             self.graph = NonlinearFactorGraph()
@@ -303,9 +318,13 @@ if __name__ == '__main__':
     graph1 = gtsam.NonlinearFactorGraph()
     initial1 = gtsam.Values()
     auv_isam.batchSolve(graph1, initial1)
-    print("\nInitial Estimate:\n{}".format(initial1))  # print
+    # print("\nInitial Estimate:\n{}".format(initial1))  # print
     results = gtsam.LevenbergMarquardtOptimizer(graph1, initial1, gtsam.LevenbergMarquardtParams()).optimize()
     plot.plot_trajectory(1, results)
+    plt.show()
     #points = constr3DPoints(results)
-    #ax.plot3D(points[:, 0], points[:, 1], points[:, 2], 'orange')
+    
+    fig = plt.figure()
+    ax = plt.axes(projection='3d')
+    ax.plot3D(auv_isam.ODOMDATA[:, 0], auv_isam.ODOMDATA[:, 1], auv_isam.ODOMDATA[:, 2], 'orange')
     plt.show()
