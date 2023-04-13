@@ -407,38 +407,40 @@ if __name__ == '__main__':
         print('\t'.join(rosnode.get_node_names()))
         mystr = '\t'.join(rosnode.get_node_names())
         print('play' in mystr)
-        if 'play' not in mystr:
+        try:
+            if 'play' not in mystr:
 
-            print("not play")
-            ## read transform
-            # got_transform = False
-            # while not got_transform:
-            #     try:
-            #         ## todo make sure transform time matches pose time?
-            #         transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
+                print("not play")
+                ## read transform
+                # got_transform = False
+                # while not got_transform:
+                #     try:
+                #         ## todo make sure transform time matches pose time?
+                #         transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
+                        
+                #         auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
+                #                                                     transform.transform.rotation.x, 
+                #                                                     transform.transform.rotation.y, 
+                #                                                     transform.transform.rotation.z).matrix()
+                        
+                #         got_transform = True
+                #         print("got transform")
                     
-            #         auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
-            #                                                     transform.transform.rotation.x, 
-            #                                                     transform.transform.rotation.y, 
-            #                                                     transform.transform.rotation.z).matrix()
-                    
-            #         got_transform = True
-            #         print("got transform")
-                
-            #     except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            #         # print("exception in transform lookup loop")
-            #         continue
+                #     except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                #         # print("exception in transform lookup loop")
+                #         continue
 
-           
-            auv_isam.do_accum = True
-            auv_isam.createBatch()
-            results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
+            
+                auv_isam.do_accum = True
+                auv_isam.createBatch()
+                results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
 
-            auv_isam.timestamp += 1
+                auv_isam.timestamp += 1
 
-            break
+                break
+        except Exception as e: print(e)
         
-        rospy.sleep(0.5)
+        # rospy.sleep(0.5)
     plot.plot_trajectory(1, results)
     plt.show()
 
