@@ -126,9 +126,8 @@ class AUV_ISAM:
 
 
         self.last_imu_transform = np.eye(3)
-        self.g_transform = np.eye(3)
-
-        self.imu_transforms = []
+        self.last_dvl_transform = np.eye(3)
+        # self.g_transform = np.eye(3)
 
         self.grav = 9.81
         self.g = vector3(0, 0, -self.grav)
@@ -288,7 +287,7 @@ class AUV_ISAM:
         # depthFactor = self.create_depth_factor()
         # orbFactor = self.create_orb_factor()
         # factors = [imuFactor, dvlFactor]
-        factors = [imuFactor]
+        factors = [imuFactor, dvlFactor]
 
         return factors
 
@@ -342,6 +341,10 @@ class AUV_ISAM:
         self.accum.integrateMeasurement(self.imu_accum[index][0], self.imu_accum[index][1], delta_t)
         imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
         return imuFactor
+    
+    def create_dvl_factor_batch(self, index):
+        dvlFactor = None
+        return dvlFactor
 
     def createBatch(self):
         #poses = self.ODOMDATA
@@ -367,6 +370,7 @@ class AUV_ISAM:
                 self.batch_initial.insert(V(i), velocity)
                 imuFactor = self.create_imu_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
+                # dvlFactor = self.create_dvl_factor_batch(i)
                 
         return
 
@@ -415,7 +419,7 @@ if __name__ == '__main__':
         if 'play' not in '\t'.join(rosnode.get_node_names()):
 
             auv_isam.do_accum = True
-            print("num transforms: ", len(auv_isam.imu_transforms))
+            # print("num transforms: ", len(auv_isam.imu_transforms))
             print("odom lentgth:", len(auv_isam.odom_accum))
             print("imu lentgth:", len(auv_isam.imu_accum))
 
