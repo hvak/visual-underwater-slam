@@ -71,6 +71,10 @@ def callback_imu_transform(transform):
     auv_isam.last_imu_transform = transform
     # auv_isam.imu_transforms.append(transform)
 
+def callback_dvl_transform(transform):
+    
+    auv_isam.last_dvl_transform = transform
+
 def vector3(x, y, z):
     """Create 3d double numpy array."""
     return np.array([x, y, z], dtype=float)
@@ -210,6 +214,7 @@ class AUV_ISAM:
 
         if self.do_accum == True:
             self.imu_accum.append(self.imu)
+            print(len(self.imu_accum))
         return
 
     def update_odom(self, data):
@@ -222,6 +227,7 @@ class AUV_ISAM:
                      "q": data.pose.pose.orientation.w}
         if self.do_accum == True:
             self.odom_accum.append(self.odom)
+            print(len(self.odom_accum))
 
         return
 
@@ -456,6 +462,9 @@ if __name__ == '__main__':
     listener = tf2_ros.TransformListener(tfBuffer)
     tf_listener = tf.TransformListener()
 
+
+    auv_isam = AUV_ISAM()
+
     imu_sub = message_filters.Subscriber('/zedm/zed_node/imu/data', Imu)
     #rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
     # rospy.Subscriber('/zedm/zed_node/odom', Odometry, callback_odom)
@@ -465,22 +474,12 @@ if __name__ == '__main__':
 
     landmark_sub = message_filters.Subscriber('/auv/image_processor/features', CameraMeasurement)
 
-    ts = message_filters.ApproximateTimeSynchronizer([imu_sub, odom_sub, dvl_sub, landmark_sub], 10, 0.1, allow_headerless=True)
+    ts = message_filters.ApproximateTimeSynchronizer([imu_sub, odom_sub, dvl_sub, landmark_sub], 10, 0.2, allow_headerless=True)
     ts.registerCallback(ts_callback)
 
-    auv_isam = AUV_ISAM()
 
     while not rospy.is_shutdown():
-        # try:
-        #     dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
-        #     auv_isam.dvl_transform = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
-        #                                                  dvl_transform.transform.rotation.x, 
-        #                                                  dvl_transform.transform.rotation.y, 
-        #                                                  dvl_transform.transform.rotation.z).matrix()
-        #     got_transform = True
         
-        # except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-        #     print("exception in DVL transform lookup loop")
 
         try:
             transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
@@ -489,10 +488,23 @@ if __name__ == '__main__':
                                             transform.transform.rotation.y, 
                                             transform.transform.rotation.z).matrix()
             callback_imu_transform(transform_mat)
-            print('got transform')
+            print('got imu transform')
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            callback_imu_transform(auv_isam.last_imu_transform)
+            # callback_imu_transform(auv_isam.last_imu_transform) # commented out bc no need to update variable with same data
             print("exception in imu transform lookup loop, using last transform")
+
+        try:
+            dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
+            dvl_transform_mat = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
+                                                         dvl_transform.transform.rotation.x, 
+                                                         dvl_transform.transform.rotation.y, 
+                                                         dvl_transform.transform.rotation.z).matrix()
+            
+            callback_dvl_transform(transform_mat)
+            print('got dvl transform')
+        
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            print("exception in DVL transform lookup loop")
 
         if 'play' not in '\t'.join(rosnode.get_node_names()):
 
