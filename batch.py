@@ -39,6 +39,8 @@ from gtsam.utils import plot
 
 def callback_imu(data):
     auv_isam.update_imu(data) # whatever this is
+    # auv_isam.imu_transforms.append(auv_isam.last_imu_transform)
+
     #print(data)
 
 def callback_odom(data):
@@ -52,6 +54,11 @@ def callback_mavros_vel(data):
 def callback_dvl(data):
     auv_isam.update_dvl(data)
     #print(data)
+
+def callback_imu_transform(transform):
+    
+    auv_isam.last_imu_transform = transform
+    # auv_isam.imu_transforms.append(transform)
 
 def vector3(x, y, z):
     """Create 3d double numpy array."""
@@ -118,7 +125,11 @@ class AUV_ISAM:
         self.dvl_model = gtsam.noiseModel.Isotropic.Sigma(3, 0.1) ## Bagoren et al
 
 
+        self.last_imu_transform = np.eye(3)
         self.g_transform = np.eye(3)
+
+        self.imu_transforms = []
+
         self.grav = 9.81
         self.g = vector3(0, 0, -self.grav)
 
@@ -168,7 +179,7 @@ class AUV_ISAM:
         #print("transformed gravity ", np.dot(self.g_transform, self.g))
         if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
             print(data)
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.g_transform.T, self.g)
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.last_imu_transform, self.g)
         #print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
@@ -378,69 +389,44 @@ if __name__ == '__main__':
     auv_isam = AUV_ISAM()
 
     while not rospy.is_shutdown():
-        
-        # got_transform = True    
-        # while not got_transform:
-        #     try:
-        #         dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
-        #         auv_isam.dvl_transform = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
-        #                                                      dvl_transform.transform.rotation.x, 
-        #                                                      dvl_transform.transform.rotation.y, 
-        #                                                      dvl_transform.transform.rotation.z).matrix()
-        #         got_transform = True
-            
-        #     except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-        #         print("exception in DVL transform lookup loop")
-        #         continue
-
         # try:
-        #     transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
-        #     auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
-        #                                                 transform.transform.rotation.x, 
-        #                                                 transform.transform.rotation.y, 
-        #                                                 transform.transform.rotation.z).matrix()
-        #     print('got transform')
-        # except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-        #     print("exception in transform lookup loop")
-        print(rosnode.get_node_names())
-        print("done with names")
-        print('\t'.join(rosnode.get_node_names()))
-        mystr = '\t'.join(rosnode.get_node_names())
-        print('play' in mystr)
-        try:
-            if 'play' not in mystr:
-
-                print("not play")
-                ## read transform
-                # got_transform = False
-                # while not got_transform:
-                #     try:
-                #         ## todo make sure transform time matches pose time?
-                #         transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
-                        
-                #         auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
-                #                                                     transform.transform.rotation.x, 
-                #                                                     transform.transform.rotation.y, 
-                #                                                     transform.transform.rotation.z).matrix()
-                        
-                #         got_transform = True
-                #         print("got transform")
-                    
-                #     except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-                #         # print("exception in transform lookup loop")
-                #         continue
-
-            
-                auv_isam.do_accum = True
-                auv_isam.createBatch()
-                results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
-
-                auv_isam.timestamp += 1
-
-                break
-        except Exception as e: print(e)
+        #     dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
+        #     auv_isam.dvl_transform = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
+        #                                                  dvl_transform.transform.rotation.x, 
+        #                                                  dvl_transform.transform.rotation.y, 
+        #                                                  dvl_transform.transform.rotation.z).matrix()
+        #     got_transform = True
         
-        # rospy.sleep(0.5)
+        # except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+        #     print("exception in DVL transform lookup loop")
+
+        try:
+            transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
+            transform_mat = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
+                                            transform.transform.rotation.x, 
+                                            transform.transform.rotation.y, 
+                                            transform.transform.rotation.z).matrix()
+            callback_imu_transform(transform_mat)
+            print('got transform')
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            callback_imu_transform(auv_isam.last_imu_transform)
+            print("exception in imu transform lookup loop, using last transform")
+
+        if 'play' not in '\t'.join(rosnode.get_node_names()):
+
+            auv_isam.do_accum = True
+            print("num transforms: ", len(auv_isam.imu_transforms))
+            print("odom lentgth:", len(auv_isam.odom_accum))
+            print("imu lentgth:", len(auv_isam.imu_accum))
+
+            auv_isam.createBatch()
+            results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
+
+            auv_isam.timestamp += 1
+
+            break
+        
+        rospy.sleep(0.5)
     plot.plot_trajectory(1, results)
     plt.show()
 
