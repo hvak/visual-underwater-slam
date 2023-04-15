@@ -152,6 +152,7 @@ class AUV_ISAM:
         self.odom_accum = []
         self.imu_accum = []
         self.landmark_accum = []
+        self.dvl_accum = []
         self.batch_graph = gtsam.NonlinearFactorGraph()
         self.batch_initial = gtsam.Values()
 
@@ -206,7 +207,7 @@ class AUV_ISAM:
         #print("transformed gravity ", np.dot(self.g_transform, self.g))
         if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
             print(data)
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.last_imu_transform, self.g)
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) +  np.dot(self.last_imu_transform, self.g)
         #print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
@@ -241,7 +242,7 @@ class AUV_ISAM:
     def update_dvl(self, data):
         # print("dvlUpdate")
         # stays in dvl link frame, but error function changes it to world
-        self.dvl = np.array([ data.twist.linear.x, data.twist.linear.y, data.twist.linear.z])
+        self.dvl_accum.append([ data.twist.linear.x, data.twist.linear.y, data.twist.linear.z])
         return
     
     def update_landmarks(self, data):
@@ -322,39 +323,6 @@ class AUV_ISAM:
             jacobians[0] = rot_mat
         return error
 
-    ###############################
-    #
-    #   Create Factors
-    #
-    ################################
-    
-    def create_imu_factor(self):
-        delta_t = .01
-        self.accum.integrateMeasurement(self.imu[0], self.imu[1], delta_t)
-        imuFactor = ImuFactor(X(self.timestamp - 1), V(self.timestamp - 1), X(self.timestamp), V(self.timestamp), self.biasKey, self.accum)
-        return imuFactor
-    
-    def create_mavros_vel_factor(self):
-        #
-        return
-    
-    def create_dvl_factor(self):
-        dvl_factor = gtsam.CustomFactor(
-                        self.dvl_model,
-                        [self.timestamp], # TODO not necessarily the same as the data received time?
-                        partial(self.velocity_error, np.array([self.dvl])),
-                    )
-        return dvl_factor
-    
-    def get_factors(self):
-        imuFactor = self.create_imu_factor()
-        dvlFactor = self.create_dvl_factor()
-        # depthFactor = self.create_depth_factor()
-        # orbFactor = self.create_orb_factor()
-        # factors = [imuFactor, dvlFactor]
-        factors = [imuFactor, dvlFactor]
-
-        return factors
 
     def update(self):
 
@@ -408,7 +376,14 @@ class AUV_ISAM:
         return imuFactor
     
     def create_dvl_factor_batch(self, index):
-        dvlFactor = None
+
+        dvlFactor = gtsam.CustomFactor(
+                        self.dvl_model,
+                        [index], # TODO should this be X or also V?
+                        partial(self.velocity_error, np.array([self.dvl_accum[index]])),
+                    )
+        
+
         return dvlFactor
 
     def createBatch(self):
@@ -434,7 +409,9 @@ class AUV_ISAM:
                 self.batch_initial.insert(X(i), pose)
                 self.batch_initial.insert(V(i), velocity)
                 imuFactor = self.create_imu_factor_batch(i)
+                dvlFactor = self.create_dvl_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
+                self.batch_graph.push_back(dvlFactor)
 
                 for landmark in self.landmark_accum[i]:
                     if not self.batch_initial.exists(L(landmark['id'])):
@@ -490,7 +467,6 @@ if __name__ == '__main__':
             callback_imu_transform(transform_mat)
             print('got imu transform')
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            # callback_imu_transform(auv_isam.last_imu_transform) # commented out bc no need to update variable with same data
             print("exception in imu transform lookup loop, using last transform")
 
         try:
@@ -500,9 +476,8 @@ if __name__ == '__main__':
                                                          dvl_transform.transform.rotation.y, 
                                                          dvl_transform.transform.rotation.z).matrix()
             
-            callback_dvl_transform(transform_mat)
+            callback_dvl_transform(dvl_transform_mat)
             print('got dvl transform')
-        
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             print("exception in DVL transform lookup loop")
 
