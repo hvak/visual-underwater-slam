@@ -56,6 +56,17 @@ def vector3(x, y, z):
     """Create 3d double numpy array."""
     return np.array([x, y, z], dtype=float)
 
+def constr3DPoints(values):
+    i = 0
+    points = np.empty((1,3))
+    while values.exists(i):
+        pose_i = values.atPose3(i)
+        point = np.array([pose_i.x(), pose_i.y(), pose_i.z()])
+        points = np.append(points, [point], axis=0)
+        i += 1
+
+    return points
+
 
 g = 9.81
 n_gravity = vector3(0, 0, -g)
@@ -93,16 +104,17 @@ class AUV_ISAM:
         self.biasnoise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
         self.biasprior = PriorFactorConstantBias(self.biasKey, gtsam.imuBias.ConstantBias(),self. biasnoise)
         self.graph.push_back(self.biasprior)
-        self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
-        self.velnoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
+        #self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
 
         # Calculate with correct initial velocity
         self.n_velocity = vector3(0, 0, 0)
+        self.velnoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
         self.velprior = PriorFactorVector(V(0), self.n_velocity, self.velnoise)
         self.graph.push_back(self.velprior)
-        self.initialEstimate.insert(V(0), self.n_velocity)
+        #self.initialEstimate.insert(V(0), self.n_velocity)
 
         self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS)
+        self.imuFactor = None
 
         ### DATA TYPES
         self.mav_vel = None
@@ -113,7 +125,7 @@ class AUV_ISAM:
         self.dvl_model = gtsam.noiseModel.Isotropic.Sigma(3, 0.1) ## Bagoren et al
 
 
-        self.g_transform = None
+        self.g_transform = np.eye(3)
         self.grav = 9.81
         self.g = vector3(0, 0, -self.grav)
 
@@ -123,9 +135,9 @@ class AUV_ISAM:
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
         PARAMS = gtsam.PreintegrationParams.MakeSharedU(g)
         I = np.eye(3)
-        PARAMS.setAccelerometerCovariance(I * 0.1)
-        PARAMS.setGyroscopeCovariance(I * 0.1)
-        PARAMS.setIntegrationCovariance(I * 0.1)
+        PARAMS.setAccelerometerCovariance(I * 8.999999999999999e-08)
+        PARAMS.setGyroscopeCovariance(I * 1.2184696791468346e-07)
+        PARAMS.setIntegrationCovariance(I * 1e-07)
         PARAMS.setUse2ndOrderCoriolis(False)
         PARAMS.setOmegaCoriolis(vector3(0, 0, 0))
 
@@ -151,20 +163,23 @@ class AUV_ISAM:
     
     def update_imu(self, data):
         print("IMU Update")
-        #print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
+        #print("IMU Timestamp:", data.header.stamp.secs)
+        print("linear accel raw", np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]))
         #print("transform: ", self.g_transform)
-        #print("transformed gravity ", np.dot(self.g_transform, self.g))
+        print("transformed gravity ", np.dot(self.g_transform.transpose(), self.g))
         if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
             print(data)
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) #- np.dot(self.g_transform.T, self.g)
-        #print("final accel with gravity removed", measAcc)
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) + np.flip(np.dot(self.g_transform.transpose(), self.g))
+        print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
         self.imu = np.array([measAcc, measOmega])
+        self.create_imu_factor()
         return
 
     def update_odom(self, data):
-        #print("Odom Update")
+        print("Odom Update")
+        #print("Odom Timestamp:", data.header.stamp.secs)
         self.odom = {"x": data.pose.pose.position.x, 
                      "y": data.pose.pose.position.y,
                      "z": data.pose.pose.position.z,
@@ -237,7 +252,7 @@ class AUV_ISAM:
     ################################
     
     def create_imu_factor(self):
-        delta_t = .01
+        delta_t = .2
         self.accum.integrateMeasurement(self.imu[0], self.imu[1], delta_t)
         imuFactor = ImuFactor(X(self.timestamp - 1), V(self.timestamp - 1), X(self.timestamp), V(self.timestamp), self.biasKey, self.accum)
         return imuFactor
@@ -265,50 +280,78 @@ class AUV_ISAM:
         return factors
 
     def update(self):
+        velocity = vector3(0,0,0)
+        #print(each)
+        rot = gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k'])
+        t = gtsam.Point3(self.odom['x'], self.odom['y'], self.odom['z'])
+        #print(rot)
+        pose = gtsam.Pose3(rot, t)
+        if(self.timestamp == 0):
+            self.initialEstimate.insert(X(self.timestamp), pose)
+            self.initialEstimate.insert(V(self.timestamp), velocity)
+            self.initialEstimate.insert(B(self.timestamp), gtsam.imuBias.ConstantBias())
+        else:
+            self.initialEstimate.insert(X(self.timestamp), pose)
+            self.initialEstimate.insert(V(self.timestamp), velocity)
+            self.graph.push_back(self.imuFactor)
+        self.accum.resetIntegration()
+        
+        print("Factor Added")
+        print(f'\n')
+        self.isam.update(self.graph, self.initialEstimate)
+        result = self.isam.calculateEstimate()
+        #result.print()
+        plot.plot_incremental_trajectory(0, result, start=self.timestamp, scale=3, time_interval=0.2)
 
-        # Simulate poses and imu measurements, adding them to the factor graph
-            t = self.timestamp * self.delta_t  # simulation time
-            if self.timestamp == 0:  # First time add two poses
-                self.initialEstimate.insert(X(0), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
-                self.initialEstimate.insert(X(1), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
-            elif self.timestamp >= 2:  # Add more poses as necessary
-                self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
+        self.graph = NonlinearFactorGraph()
+        self.initialEstimate.clear()
+        self.timestamp += 1
+                
+        return
+        # # Simulate poses and imu measurements, adding them to the factor graph
+        #     t = self.timestamp * self.delta_t  # simulation time
+        #     if self.timestamp == 0:  # First time add two poses
+        #         self.initialEstimate.insert(X(0), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
+        #         self.initialEstimate.insert(X(1), gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]))
+        #     elif self.timestamp >= 2:  # Add more poses as necessary
+        #         self.initialEstimate.insert(X(self.timestamp), gtsam.Pose3(gtsam.Rot3.Quaternion(self.odom['q'], self.odom['i'], self.odom['j'], self.odom['k']), [self.odom['x'], self.odom['y'], self.odom['z']]))
 
-            if self.timestamp > 0:
-                # Add Bias variables periodically
-                if self.timestamp % 5 == 0:
-                    self.biasKey += 1
-                    factor = BetweenFactorConstantBias(
-                        self.biasKey - 1, self.biasKey, gtsam.imuBias.ConstantBias(), self.BIAS_COVARIANCE)
-                    self.graph.add(factor)
-                    self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
+        #     if self.timestamp > 0:
+        #         # Add Bias variables periodically
+        #         if self.timestamp % 5 == 0:
+        #             self.biasKey += 1
+        #             factor = BetweenFactorConstantBias(
+        #                 self.biasKey - 1, self.biasKey, gtsam.imuBias.ConstantBias(), self.BIAS_COVARIANCE)
+        #             self.graph.add(factor)
+        #             self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
 
-                # Add Factors
-                for factor in self.get_factors():
-                    self.graph.add(factor)
+        #         # Add Factors
+        #         for factor in self.get_factors():
+        #             self.graph.add(factor)
 
-                # insert new velocity, which is wrong
-                if self.mav_vel is not None:
-                    #print("adding vel ", self.mav_vel)
-                    # rotate?
-                    # try removing this and letting isam fill in
-                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
-                else:
-                    #print("not adding vel", self.mav_vel)
-                    self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
-                self.accum.resetIntegration()
+        #         # insert new velocity, which is wrong
+        #         if self.mav_vel is not None:
+        #             #print("adding vel ", self.mav_vel)
+        #             # rotate?
+        #             # try removing this and letting isam fill in
+        #             self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
+        #         else:
+        #             #print("not adding vel", self.mav_vel)
+        #             self.initialEstimate.insert(V(self.timestamp), vector3(0,0,0))
+        #         self.accum.resetIntegration()
 
-            # Incremental solution
-            self.isam.update(self.graph, self.initialEstimate)
-            result = self.isam.calculateEstimate()
-            plot.plot_incremental_trajectory(0, result,
-                                            start=self.timestamp, scale=3, time_interval=0.01)
-            plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.5)
+        #     # Incremental solution
+        #     self.isam.update(self.graph, self.initialEstimate)
+        #     if (self.timestamp > 50):
+        #         result = self.isam.calculateEstimate()
+        #         plot.plot_incremental_trajectory(0, result,
+        #                                         start=self.timestamp, scale=3, time_interval=0.01)
+        #         plot.plot_pose3(fignum=0, pose=gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [self.odom['x'], self.odom['y'], self.odom['z']]), axis_length=0.5)
 
-            # reset
-            self.graph = NonlinearFactorGraph()
-            self.initialEstimate.clear()
-            self.timestamp += 1
+        #     # reset
+        #     self.graph = NonlinearFactorGraph()
+        #     self.initialEstimate.clear()
+        #     self.timestamp += 1
 
     
 
@@ -330,7 +373,7 @@ if __name__ == '__main__':
 
     while not rospy.is_shutdown():
         #auv_isam.g_transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
-        got_transform = True 
+        got_transform = False
         while not got_transform:
             try:
                 ## todo make sure transform time matches pose time?
@@ -365,6 +408,6 @@ if __name__ == '__main__':
             auv_isam.update()
 
             #plt.show()
-        rospy.sleep(0.5)
+        #rospy.sleep(0.5)
 
     plt.show()
