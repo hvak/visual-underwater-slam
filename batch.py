@@ -61,17 +61,19 @@ def callback_imu_transform(transform):
     if auv_isam.do_accum == True:
         auv_isam.odom_accum.append(auv_isam.odom)
 
+        print(auv_isam.last_imu_transform)
+
         measAcc = np.array([auv_isam.imu_data.linear_acceleration.x, 
                             auv_isam.imu_data.linear_acceleration.y, 
-                            auv_isam.imu_data.linear_acceleration.z]) - np.dot(auv_isam.last_imu_transform, auv_isam.g)
-        #print("final accel with gravity removed", measAcc)
+                            auv_isam.imu_data.linear_acceleration.z]) - np.flip(np.dot(auv_isam.last_imu_transform.T, auv_isam.g))
+        print("raw linear accel", auv_isam.imu_data.linear_acceleration)
+        print("gravity in bot frame", np.dot(auv_isam.last_imu_transform.T, auv_isam.g))
+        print("final accel with gravity removed", measAcc)
         measOmega = np.array([auv_isam.imu_data.angular_velocity.x, auv_isam.imu_data.angular_velocity.y, auv_isam.imu_data.angular_velocity.z])
-        #print('here', measAcc)
         auv_isam.imu_accum.append(np.array([measAcc, measOmega]))
 
 
         auv_isam.dvl_accum.append(auv_isam.dvl)
-        print("appending")
     
     # auv_isam.imu_transforms.append(transform)
 
@@ -261,7 +263,6 @@ class AUV_ISAM:
         self.accum.integrateMeasurement(self.imu_accum[index][0], self.imu_accum[index][1], delta_t)
         ## TODO maybe add multiple imu and reset
         imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
-        self.accum.resetIntegration()
         return imuFactor
     
     def create_dvl_factor_batch(self, index):
@@ -296,6 +297,8 @@ class AUV_ISAM:
                 imuFactor = self.create_imu_factor_batch(i)
                 dvlFactor = self.create_dvl_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
+                self.accum.resetIntegration()
+
                 # self.batch_graph.push_back(dvlFactor)
                 # print(num_factors)
                 
@@ -310,8 +313,8 @@ if __name__ == '__main__':
     tfBuffer = tf2_ros.Buffer()
     listener = tf2_ros.TransformListener(tfBuffer)
 
-    rospy.Subscriber('/zedm/zed_node/imu/data', Imu, callback_imu)
-    #rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
+    # rospy.Subscriber('/zedm/zed_node/imu/data', Imu, callback_imu)
+    rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
     # rospy.Subscriber('/zedm/zed_node/odom', Odometry, callback_odom)
     rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
     # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
@@ -322,7 +325,7 @@ if __name__ == '__main__':
     while not rospy.is_shutdown():
 
         try:
-            transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
+            transform = tfBuffer.lookup_transform( 'map', 'base_link', rospy.Time(0))
             transform_mat = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
                                             transform.transform.rotation.x, 
                                             transform.transform.rotation.y, 
