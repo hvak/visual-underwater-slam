@@ -32,7 +32,7 @@ from gtsam import (ISAM2, BetweenFactorConstantBias, Cal3_S2,
 from gtsam.symbol_shorthand import B, V, X, L
 from gtsam.utils import plot
 import message_filters
-from gtsam_vio.msg import CameraMeasurement
+#from gtsam_vio.msg import CameraMeasurement
 ###############################
 #
 #   Callbacks, Global
@@ -44,7 +44,8 @@ def ts_callback(imu, odom, dvl, landmarks):
     auv_isam.update_imu(imu)
     auv_isam.update_odom(odom)
     auv_isam.update_dvl(dvl)
-    auv_isam.update_landmarks(landmarks)
+    print("len imu, odom:", len(auv_isam.imu_accum), len(auv_isam.odom_accum) )
+    # auv_isam.update_landmarks(landmarks)
 
 """
 def callback_imu(data):
@@ -253,7 +254,7 @@ class AUV_ISAM:
             for feature in data.features:
                 id = feature.id
 
-                uL = (feature.u0 + 1) * 0.5 * self.resolution_x;
+                uL = (feature.u0 + 1) * 0.5 * self.resolution_x
                 uR = (feature.u1 + 1) * 0.5 * self.resolution_x
                 v = ((feature.v0 + feature.v1) / 2.0 + 1) * 0.5 * self.resolution_y
 
@@ -412,17 +413,18 @@ class AUV_ISAM:
                 dvlFactor = self.create_dvl_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
                 self.batch_graph.push_back(dvlFactor)
+                print("Factors added to graph")
 
-                for landmark in self.landmark_accum[i]:
-                    if not self.batch_initial.exists(L(landmark['id'])):
-                        self.batch_initial.insert(L(landmark['id']), landmark['pose'])
+                # for landmark in self.landmark_accum[i]:
+                #     if not self.batch_initial.exists(L(landmark['id'])):
+                #         self.batch_initial.insert(L(landmark['id']), landmark['pose'])
                     
-                    stereo_factor = GenericStereoFactor3D(
-                        StereoPoint2(landmark['uL'], landmark['uR'], landmark['v']),
-                        self.landmark_noise,
-                        X(i), L(landmark['id']), self.K
-                    )
-                    self.batch_graph.push_back(stereo_factor)
+                #     stereo_factor = GenericStereoFactor3D(
+                #         StereoPoint2(landmark['uL'], landmark['uR'], landmark['v']),
+                #         self.landmark_noise,
+                #         X(i), L(landmark['id']), self.K
+                #     )
+                #     self.batch_graph.push_back(stereo_factor)
                 
             self.batch_graph.saveGraph("test.dot")
 
@@ -449,9 +451,9 @@ if __name__ == '__main__':
     # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
     dvl_sub = message_filters.Subscriber('/dvl/twist', TwistStamped)
 
-    landmark_sub = message_filters.Subscriber('/auv/image_processor/features', CameraMeasurement)
+    #landmark_sub = message_filters.Subscriber('/auv/image_processor/features', CameraMeasurement)
 
-    ts = message_filters.ApproximateTimeSynchronizer([imu_sub, odom_sub, dvl_sub, landmark_sub], 10, 0.2, allow_headerless=True)
+    ts = message_filters.ApproximateTimeSynchronizer([imu_sub, odom_sub], 10, 0.2, allow_headerless=True)#([imu_sub, odom_sub, dvl_sub, landmark_sub], 10, 0.2, allow_headerless=True)
     ts.registerCallback(ts_callback)
 
 
