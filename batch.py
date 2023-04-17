@@ -9,11 +9,10 @@ import rosnode
 from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
-# from waterlinked_a50_ros_driver.msg import DVL
+from waterlinked_a50_ros_driver.msg import DVL
 from typing import Optional, List
 import sys
 import tf2_ros
-import tf
 from functools import partial
 
 
@@ -28,29 +27,18 @@ from gtsam import (ISAM2, BetweenFactorConstantBias, Cal3_S2,
                    ConstantTwistScenario, ImuFactor, NonlinearFactorGraph,
                    PinholeCameraCal3_S2, Point3, Pose3,
                    PriorFactorConstantBias, PriorFactorPose3,
-                   PriorFactorVector, Rot3, Values, StereoPoint2, GenericStereoFactor3D, Cal3_S2Stereo)
-from gtsam.symbol_shorthand import B, V, X, L
+                   PriorFactorVector, Rot3, Values)
+from gtsam.symbol_shorthand import B, V, X
 from gtsam.utils import plot
-import message_filters
-from gtsam_vio.msg import CameraMeasurement
+
 ###############################
 #
 #   Callbacks, Global
 #
 ################################
 
-
-def ts_callback(imu, odom, dvl, landmarks):
-    auv_isam.update_imu(imu)
-    auv_isam.update_odom(odom)
-    auv_isam.update_dvl(dvl)
-    auv_isam.update_landmarks(landmarks)
-
-"""
 def callback_imu(data):
     auv_isam.update_imu(data) # whatever this is
-    # auv_isam.imu_transforms.append(auv_isam.last_imu_transform)
-
     #print(data)
 
 def callback_odom(data):
@@ -64,16 +52,6 @@ def callback_mavros_vel(data):
 def callback_dvl(data):
     auv_isam.update_dvl(data)
     #print(data)
-"""
-
-def callback_imu_transform(transform):
-    
-    auv_isam.last_imu_transform = transform
-    # auv_isam.imu_transforms.append(transform)
-
-def callback_dvl_transform(transform):
-    
-    auv_isam.last_dvl_transform = transform
 
 def vector3(x, y, z):
     """Create 3d double numpy array."""
@@ -140,10 +118,7 @@ class AUV_ISAM:
         self.dvl_model = gtsam.noiseModel.Isotropic.Sigma(3, 0.1) ## Bagoren et al
 
 
-        self.last_imu_transform = np.eye(3)
-        self.last_dvl_transform = np.eye(3)
-        # self.g_transform = np.eye(3)
-
+        self.g_transform = None
         self.grav = 9.81
         self.g = vector3(0, 0, -self.grav)
 
@@ -151,22 +126,8 @@ class AUV_ISAM:
         self.do_accum = True
         self.odom_accum = []
         self.imu_accum = []
-        self.landmark_accum = []
-        self.dvl_accum = []
         self.batch_graph = gtsam.NonlinearFactorGraph()
         self.batch_initial = gtsam.Values()
-
-        #landmark stuff
-        self.cam_map_transform = None
-        self.intrinsic = [669.2387507702717, 669.6062139634853, 647.4136147885813, 348.40757297218505]
-        self.f = (self.intrinsic[0] + self.intrinsic[1]) / 2.0
-        self.cx = self.intrinsic[2]
-        self.cy = self.intrinsic[3]
-        self.Tx = -0.001344472879883825
-        self.K = Cal3_S2Stereo(self.intrinsic[0], self.intrinsic[1], 0.0, self.cx, self.cy, self.Tx)
-        self.resolution_x = 1920
-        self.resolution_y = 1080
-        self.landmark_noise = gtsam.noiseModel.Isotropic.Sigma(3, 10)
 
 
     def preintegration_parameters(self):
@@ -207,7 +168,7 @@ class AUV_ISAM:
         #print("transformed gravity ", np.dot(self.g_transform, self.g))
         if (np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) is None):
             print(data)
-        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) +  np.dot(self.last_imu_transform, self.g)
+        measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) #- np.dot(self.g_transform.T, self.g)
         #print("final accel with gravity removed", measAcc)
         measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
         #print('here', measAcc)
@@ -215,7 +176,6 @@ class AUV_ISAM:
 
         if self.do_accum == True:
             self.imu_accum.append(self.imu)
-            print(len(self.imu_accum))
         return
 
     def update_odom(self, data):
@@ -228,7 +188,6 @@ class AUV_ISAM:
                      "q": data.pose.pose.orientation.w}
         if self.do_accum == True:
             self.odom_accum.append(self.odom)
-            print(len(self.odom_accum))
 
         return
 
@@ -242,44 +201,9 @@ class AUV_ISAM:
     def update_dvl(self, data):
         # print("dvlUpdate")
         # stays in dvl link frame, but error function changes it to world
-        self.dvl_accum.append([ data.twist.linear.x, data.twist.linear.y, data.twist.linear.z])
+        self.dvl = np.array([ data.twist.linear.x, data.twist.linear.y, data.twist.linear.z])
         return
     
-    def update_landmarks(self, data):
-
-        #should give a list of features
-        landmarks = []
-        if self.cam_map_transform != None:
-            for feature in data.features:
-                id = feature.id
-
-                uL = (feature.u0 + 1) * 0.5 * self.resolution_x;
-                uR = (feature.u1 + 1) * 0.5 * self.resolution_x
-                v = ((feature.v0 + feature.v1) / 2.0 + 1) * 0.5 * self.resolution_y
-
-                d = uR - uL
-                x = uL
-                y = v
-                W = d / self.Tx
-                x_cam = (x - self.cx) / W
-                y_cam = (y - self.cy) / W
-                z_cam = self.f / W
-
-                cam_point = np.array([[x_cam], [y_cam], [z_cam]])
-                #print(self.cam_map_transform)
-                world_point = self.cam_map_transform[0].matrix() @ cam_point + self.cam_map_transform[1].reshape(3,1)
-                #print(world_point)
-                landmarks.append({
-                    'id': id,
-                    'pose': world_point.reshape((3,)),
-                    'uL': uL,
-                    'uR': uR,
-                    'v': v
-                })
-        
-        self.landmark_accum.append(landmarks)
-            
-        return
 
     ###############################
     #
@@ -323,6 +247,39 @@ class AUV_ISAM:
             jacobians[0] = rot_mat
         return error
 
+    ###############################
+    #
+    #   Create Factors
+    #
+    ################################
+    
+    def create_imu_factor(self):
+        delta_t = .01
+        self.accum.integrateMeasurement(self.imu[0], self.imu[1], delta_t)
+        imuFactor = ImuFactor(X(self.timestamp - 1), V(self.timestamp - 1), X(self.timestamp), V(self.timestamp), self.biasKey, self.accum)
+        return imuFactor
+    
+    def create_mavros_vel_factor(self):
+        #
+        return
+    
+    def create_dvl_factor(self):
+        dvl_factor = gtsam.CustomFactor(
+                        self.dvl_model,
+                        [self.timestamp], # TODO not necessarily the same as the data received time?
+                        partial(self.velocity_error, np.array([self.dvl])),
+                    )
+        return dvl_factor
+    
+    def get_factors(self):
+        imuFactor = self.create_imu_factor()
+        dvlFactor = self.create_dvl_factor()
+        # depthFactor = self.create_depth_factor()
+        # orbFactor = self.create_orb_factor()
+        # factors = [imuFactor, dvlFactor]
+        factors = [imuFactor]
+
+        return factors
 
     def update(self):
 
@@ -374,17 +331,6 @@ class AUV_ISAM:
         self.accum.integrateMeasurement(self.imu_accum[index][0], self.imu_accum[index][1], delta_t)
         imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
         return imuFactor
-    
-    def create_dvl_factor_batch(self, index):
-
-        dvlFactor = gtsam.CustomFactor(
-                        self.dvl_model,
-                        [index], # TODO should this be X or also V?
-                        partial(self.velocity_error, np.array([self.dvl_accum[index]])),
-                    )
-        
-
-        return dvlFactor
 
     def createBatch(self):
         #poses = self.ODOMDATA
@@ -409,23 +355,7 @@ class AUV_ISAM:
                 self.batch_initial.insert(X(i), pose)
                 self.batch_initial.insert(V(i), velocity)
                 imuFactor = self.create_imu_factor_batch(i)
-                dvlFactor = self.create_dvl_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
-                self.batch_graph.push_back(dvlFactor)
-
-                for landmark in self.landmark_accum[i]:
-                    if not self.batch_initial.exists(L(landmark['id'])):
-                        self.batch_initial.insert(L(landmark['id']), landmark['pose'])
-                    
-                    stereo_factor = GenericStereoFactor3D(
-                        StereoPoint2(landmark['uL'], landmark['uR'], landmark['v']),
-                        self.landmark_noise,
-                        X(i), L(landmark['id']), self.K
-                    )
-                    self.batch_graph.push_back(stereo_factor)
-                
-            self.batch_graph.saveGraph("test.dot")
-
                 
         return
 
@@ -437,83 +367,61 @@ if __name__ == '__main__':
 
     tfBuffer = tf2_ros.Buffer()
     listener = tf2_ros.TransformListener(tfBuffer)
-    tf_listener = tf.TransformListener()
 
+    rospy.Subscriber('/zedm/zed_node/imu/data', Imu, callback_imu)
+    #rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
+    # rospy.Subscriber('/zedm/zed_node/odom', Odometry, callback_odom)
+    rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
+    # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
+    rospy.Subscriber('/dvl/twist', TwistStamped, callback_dvl)
 
     auv_isam = AUV_ISAM()
 
-    imu_sub = message_filters.Subscriber('/zedm/zed_node/imu/data', Imu)
-    #rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
-    # rospy.Subscriber('/zedm/zed_node/odom', Odometry, callback_odom)
-    odom_sub = message_filters.Subscriber('/dvl/local_position', PoseWithCovarianceStamped)
-    # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
-    dvl_sub = message_filters.Subscriber('/dvl/twist', TwistStamped)
-
-    landmark_sub = message_filters.Subscriber('/auv/image_processor/features', CameraMeasurement)
-
-    ts = message_filters.ApproximateTimeSynchronizer([imu_sub, odom_sub, dvl_sub, landmark_sub], 10, 0.2, allow_headerless=True)
-    ts.registerCallback(ts_callback)
-
-
     while not rospy.is_shutdown():
-        
-
-        try:
-            transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
-            transform_mat = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
-                                            transform.transform.rotation.x, 
-                                            transform.transform.rotation.y, 
-                                            transform.transform.rotation.z).matrix()
-            callback_imu_transform(transform_mat)
-            print('got imu transform')
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            print("exception in imu transform lookup loop, using last transform")
-
-        try:
-            dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
-            dvl_transform_mat = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
-                                                         dvl_transform.transform.rotation.x, 
-                                                         dvl_transform.transform.rotation.y, 
-                                                         dvl_transform.transform.rotation.z).matrix()
+        #auv_isam.g_transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time().now(), rospy.Duration(3.0))
+        got_transform = True 
+        while not got_transform:
+            try:
+                ## todo make sure transform time matches pose time?
+                transform = tfBuffer.lookup_transform('map', 'base_link', rospy.Time(0))
+                
+                auv_isam.g_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
+                                                             transform.transform.rotation.x, 
+                                                             transform.transform.rotation.y, 
+                                                             transform.transform.rotation.z).matrix()
+                
+                got_transform = True
             
-            callback_dvl_transform(dvl_transform_mat)
-            print('got dvl transform')
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            print("exception in DVL transform lookup loop")
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                print("exception in transform lookup loop")
+                continue
+
+        got_transform = True    
+        while not got_transform:
+            try:
+                dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
+                auv_isam.dvl_transform = gtsam.Rot3.Quaternion(dvl_transform.transform.rotation.w, 
+                                                             dvl_transform.transform.rotation.x, 
+                                                             dvl_transform.transform.rotation.y, 
+                                                             dvl_transform.transform.rotation.z).matrix()
+                got_transform = True
+            
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                print("exception in DVL transform lookup loop")
+                continue
 
         if 'play' not in '\t'.join(rosnode.get_node_names()):
-
+           
             auv_isam.do_accum = True
-            # print("num transforms: ", len(auv_isam.imu_transforms))
-            print("odom lentgth:", len(auv_isam.odom_accum))
-            print("imu lentgth:", len(auv_isam.imu_accum))
-
             auv_isam.createBatch()
-            auv_isam.batch_graph.saveGraph('graph.dot')
             results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
 
             auv_isam.timestamp += 1
 
             break
-
-        try:
-            ## todo make sure transform time matches pose time?
-            transform = tfBuffer.lookup_transform('zedm_left_camera_optical_frame', 'map', rospy.Time(0))
-            trans = Point3(transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z)
-            rot = Rot3.Quaternion(transform.transform.rotation.w, transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z)
-            auv_isam.cam_map_transform = (rot, trans)
-            
-            # auv_isam.cam_transform = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
-            #                                              transform.transform.rotation.x, 
-            #                                              transform.transform.rotation.y, 
-            #                                              transform.transform.rotation.z).matrix()
-            
-            got_transform = True
-        
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            continue
         
         rospy.sleep(0.5)
+    
     plot.plot_trajectory(1, results)
     plt.show()
 
@@ -524,4 +432,3 @@ if __name__ == '__main__':
     z = [auv_isam.odom_accum[i]['z'] for i in range(len(auv_isam.odom_accum))]
     ax.plot3D(x, y, z)
     plt.show()
-    
