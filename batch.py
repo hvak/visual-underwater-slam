@@ -260,7 +260,7 @@ class AUV_ISAM:
 
 
     def create_imu_factor_batch(self, index):
-        delta_t = .5
+        delta_t = .25
         self.accum.integrateMeasurement(self.imu_accum[index][0], self.imu_accum[index][1], delta_t)
         ## TODO maybe add multiple imu and reset
         imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
@@ -305,7 +305,18 @@ class AUV_ISAM:
         return
 
     
+def constr3DPoints(values):
+    i = 0
+    points = np.empty((1,3))
+    while values.exists(X(i)):
+        pose_i = values.atPose3(X(i))
+        point = np.array([pose_i.x(), pose_i.y(), pose_i.z()])
+        points = np.append(points, [point], axis=0)
+        i += 1
 
+    print(values.exists(i))
+
+    return points
 
 if __name__ == '__main__':
     rospy.init_node('data_listener', anonymous=True)
@@ -361,14 +372,20 @@ if __name__ == '__main__':
 
             break
         
-        rospy.sleep(0.5)
-    plot.plot_trajectory(1, results)
-    plt.show()
+        rospy.sleep(0.25)
+
+    points = constr3DPoints(results)
+    print(points)
+    # print(results)
+    #plot.plot_trajectory(1, results)
+    #plt.show()
 
     fig = plt.figure()
     ax = plt.axes(projection='3d')
     x = [auv_isam.odom_accum[i]['x'] for i in range(len(auv_isam.odom_accum))]
     y = [auv_isam.odom_accum[i]['y'] for i in range(len(auv_isam.odom_accum))]
     z = [auv_isam.odom_accum[i]['z'] for i in range(len(auv_isam.odom_accum))]
-    ax.plot3D(x, y, z)
+    ax.plot3D(x, y, z, color='orange')
+    ax.plot3D(points[:,0], points[:,1], points[:,2], color='blue')
+
     plt.show()
