@@ -82,26 +82,17 @@ def callback_imu_transform(transform):
 ## ## Adds all most recent values to arrays 
 def record_all_data():
     auv_isam.odom_accum.append(auv_isam.odom)
-
-    # imu_transform = gtsam.Rot3.Quaternion(auv_isam.imu_data.orientation.w, 
-    #                                       auv_isam.imu_data.orientation.x, 
-    #                                       auv_isam.imu_data.orientation.y, 
-    #                                       auv_isam.imu_data.orientation.z).matrix()
-
-    # transformed_grav = (np.dot(imu_transform, auv_isam.g))
-
-    # measAcc = np.array([auv_isam.imu_data.linear_acceleration.x, 
-    #                     auv_isam.imu_data.linear_acceleration.y, 
-    #                     auv_isam.imu_data.linear_acceleration.z]) + transformed_grav
-    # print("raw linear accel", auv_isam.imu_data.linear_acceleration)
-    # print("gravity in bot frame", transformed_grav)
-    # print("final accel with gravity removed", measAcc)
-    measOmega = np.array([auv_isam.imu_data.angular_velocity.x, auv_isam.imu_data.angular_velocity.y, auv_isam.imu_data.angular_velocity.z])
-    # auv_isam.imu_accum.append(np.array([measAcc, measOmega]))
-    auv_isam.imu_accum_indices.append(len(auv_isam.imu_accum_all) - 1)
-
-
     auv_isam.dvl_accum.append(auv_isam.dvl)
+
+    index = int(len(auv_isam.imu_factors))
+
+    if index == 0:
+        ## THIS WILL NEVER GET ADDED 
+        imuFactor = ImuFactor(X(0), V(0), X(0), V(0), auv_isam.biasKey, auv_isam.accum)
+    else:
+        imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), auv_isam.biasKey, auv_isam.accum)
+    auv_isam.imu_factors.append(imuFactor)
+    auv_isam.accum.resetIntegration()
 
 def callback_dvl_transform(transform):
     
@@ -163,6 +154,7 @@ class AUV_ISAM:
         self.odom = None
         self.dvl = None
         self.imu_data = None
+        self.prev_imu_data = None
 
         ### DATA NOISE
         self.dvl_model = gtsam.noiseModel.Isotropic.Sigma(3, 0.1) ## Bagoren et al
@@ -184,6 +176,7 @@ class AUV_ISAM:
         self.imu_accum_all = np.empty((0, 3))
         self.imu_accum_ang_all = np.empty((0, 3))
         self.imu_accum_indices = []
+        self.imu_factors = []
         self.dvl_accum = []
         self.batch_graph = gtsam.NonlinearFactorGraph()
         self.batch_initial = gtsam.Values()
@@ -214,9 +207,9 @@ class AUV_ISAM:
     
     def update_imu(self, data):
 
+        self.prev_imu_data = self.imu_data
         self.imu_data = data
-
-
+        
         imu_transform = gtsam.Rot3.Quaternion(self.imu_data.orientation.w, 
                                           self.imu_data.orientation.x, 
                                           self.imu_data.orientation.y, 
@@ -235,14 +228,14 @@ class AUV_ISAM:
 
         self.imu_accum_all = np.append(self.imu_accum_all, [measAcc], axis=0)
         self.imu_accum_ang_all = np.append(self.imu_accum_ang_all, [measOmega], axis=0)
-        # measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.last_imu_transform, self.g)
-        # #print("final accel with gravity removed", measAcc)
-        # measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
-        # #print('here', measAcc)
-        # self.imu = np.array([measAcc, measOmega])
 
-        ## above code moved to transform update
-        # print("UPDATE IMU")
+        current_time_s = self.imu_data.header.stamp.secs
+        current_time_ns = self.imu_data.header.stamp.nsecs
+        prev_time_s = self.prev_imu_data.header.stamp.secs
+        prev_time_ns = self.prev_imu_data.header.stamp.nsecs
+
+        dt = (current_time_s - prev_time_s) + 1e-9*(current_time_ns - prev_time_ns)
+        self.accum.integrateMeasurement(measAcc, measOmega, dt)
 
         return
 
@@ -307,12 +300,10 @@ class AUV_ISAM:
 
 
     def create_imu_factor_batch(self, index):
-        delta_t = .25
-        print(self.imu_accum_indices)
-        print(self.smoothed_imu[:,self.imu_accum_indices[index]].T)
-        self.accum.integrateMeasurement(self.smoothed_imu[:,self.imu_accum_indices[index]].T, self.smoothed_imu_ang[:,self.imu_accum_indices[index]].T, delta_t)
+        # delta_t = .25
+        # self.accum.integrateMeasurement(self.smoothed_imu[:,self.imu_accum_indices[index]].T, self.smoothed_imu_ang[:,self.imu_accum_indices[index]].T, delta_t)
         ## TODO maybe add multiple imu and reset
-        imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
+        imuFactor = self.imu_factors[index]
         return imuFactor
     
     def create_dvl_factor_batch(self, index):
@@ -365,7 +356,6 @@ class AUV_ISAM:
                 imuFactor = self.create_imu_factor_batch(i)
                 dvlFactor = self.create_dvl_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
-                self.accum.resetIntegration()
                 # self.batch_graph.push_back(dvlFactor)
                 
         return
@@ -390,8 +380,8 @@ if __name__ == '__main__':
     tfBuffer = tf2_ros.Buffer()
     listener = tf2_ros.TransformListener(tfBuffer)
 
-    # rospy.Subscriber('/zedm/zed_node/imu/data', Imu, callback_imu)
-    rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
+    rospy.Subscriber('/zedm/zed_node/imu/data', Imu, callback_imu)
+    # rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
     # rospy.Subscriber('/zedm/zed_node/odom', Odometry, callback_odom)
     rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
     # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
@@ -403,41 +393,41 @@ if __name__ == '__main__':
 
     
 
-        if auv_isam.imu_data is not None:
+        if auv_isam.prev_imu_data is not None:
             record_all_data()
 
 
         if 'play' not in '\t'.join(rosnode.get_node_names()):
 
-            # plot imu linear
-            fig, axs = plt.subplots(3)
-            axs[0].plot(list(range(len(auv_isam.imu_accum_all[:,0]))), auv_isam.imu_accum_all[:,0])
-            axs[1].plot(list(range(len(auv_isam.imu_accum_all[:,1]))), auv_isam.imu_accum_all[:,1])
-            axs[2].plot(list(range(len(auv_isam.imu_accum_all[:,2]))), auv_isam.imu_accum_all[:,2])
-            plt.show()
+            # # plot imu linear
+            # fig, axs = plt.subplots(3)
+            # axs[0].plot(list(range(len(auv_isam.imu_accum_all[:,0]))), auv_isam.imu_accum_all[:,0])
+            # axs[1].plot(list(range(len(auv_isam.imu_accum_all[:,1]))), auv_isam.imu_accum_all[:,1])
+            # axs[2].plot(list(range(len(auv_isam.imu_accum_all[:,2]))), auv_isam.imu_accum_all[:,2])
+            # plt.show()
 
-            auv_isam.smoothed_imu = np.array(auv_isam.smooth_imu(auv_isam.imu_accum_all))
+            # auv_isam.smoothed_imu = np.array(auv_isam.smooth_imu(auv_isam.imu_accum_all))
 
-            fig, axs = plt.subplots(3)
-            axs[0].plot(list(range(len(auv_isam.smoothed_imu[0]))), auv_isam.smoothed_imu[0])
-            axs[1].plot(list(range(len(auv_isam.smoothed_imu[1]))), auv_isam.smoothed_imu[1])
-            axs[2].plot(list(range(len(auv_isam.smoothed_imu[2]))), auv_isam.smoothed_imu[2])
-            plt.show()
+            # fig, axs = plt.subplots(3)
+            # axs[0].plot(list(range(len(auv_isam.smoothed_imu[0]))), auv_isam.smoothed_imu[0])
+            # axs[1].plot(list(range(len(auv_isam.smoothed_imu[1]))), auv_isam.smoothed_imu[1])
+            # axs[2].plot(list(range(len(auv_isam.smoothed_imu[2]))), auv_isam.smoothed_imu[2])
+            # plt.show()
 
-            # plot imu angular
-            fig, axs = plt.subplots(3)
-            axs[0].plot(list(range(len(auv_isam.imu_accum_ang_all[:,0]))), auv_isam.imu_accum_ang_all[:,0])
-            axs[1].plot(list(range(len(auv_isam.imu_accum_ang_all[:,1]))), auv_isam.imu_accum_ang_all[:,1])
-            axs[2].plot(list(range(len(auv_isam.imu_accum_ang_all[:,2]))), auv_isam.imu_accum_ang_all[:,2])
-            plt.show()
+            # # plot imu angular
+            # fig, axs = plt.subplots(3)
+            # axs[0].plot(list(range(len(auv_isam.imu_accum_ang_all[:,0]))), auv_isam.imu_accum_ang_all[:,0])
+            # axs[1].plot(list(range(len(auv_isam.imu_accum_ang_all[:,1]))), auv_isam.imu_accum_ang_all[:,1])
+            # axs[2].plot(list(range(len(auv_isam.imu_accum_ang_all[:,2]))), auv_isam.imu_accum_ang_all[:,2])
+            # plt.show()
 
-            auv_isam.smoothed_imu_ang = np.array(auv_isam.smooth_imu(auv_isam.imu_accum_ang_all))
+            # auv_isam.smoothed_imu_ang = np.array(auv_isam.smooth_imu(auv_isam.imu_accum_ang_all))
 
-            fig, axs = plt.subplots(3)
-            axs[0].plot(list(range(len(auv_isam.smoothed_imu_ang[0]))), auv_isam.smoothed_imu_ang[0])
-            axs[1].plot(list(range(len(auv_isam.smoothed_imu_ang[1]))), auv_isam.smoothed_imu_ang[1])
-            axs[2].plot(list(range(len(auv_isam.smoothed_imu_ang[2]))), auv_isam.smoothed_imu_ang[2])
-            plt.show()
+            # fig, axs = plt.subplots(3)
+            # axs[0].plot(list(range(len(auv_isam.smoothed_imu_ang[0]))), auv_isam.smoothed_imu_ang[0])
+            # axs[1].plot(list(range(len(auv_isam.smoothed_imu_ang[1]))), auv_isam.smoothed_imu_ang[1])
+            # axs[2].plot(list(range(len(auv_isam.smoothed_imu_ang[2]))), auv_isam.smoothed_imu_ang[2])
+            # plt.show()
 
 
 
@@ -466,7 +456,7 @@ if __name__ == '__main__':
     x = [auv_isam.odom_accum[i]['x'] for i in range(len(auv_isam.odom_accum))]
     y = [auv_isam.odom_accum[i]['y'] for i in range(len(auv_isam.odom_accum))]
     z = [auv_isam.odom_accum[i]['z'] for i in range(len(auv_isam.odom_accum))]
-    ax.plot3D(x, y, z, color='orange')
+    ax.plot3D(x, y, z, color='orange', linewidth=2)
     ax.plot3D(points[:,0], points[:,1], points[:,2], color='blue')
 
     plt.show()
