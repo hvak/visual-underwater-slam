@@ -63,11 +63,13 @@ def callback_imu_transform(transform):
 
         print(auv_isam.last_imu_transform)
 
+        transformed_grav = np.flip(np.dot(auv_isam.last_imu_transform.T, auv_isam.g))
+
         measAcc = np.array([auv_isam.imu_data.linear_acceleration.x, 
                             auv_isam.imu_data.linear_acceleration.y, 
-                            auv_isam.imu_data.linear_acceleration.z]) - np.flip(np.dot(auv_isam.last_imu_transform.T, auv_isam.g))
+                            auv_isam.imu_data.linear_acceleration.z]) - transformed_grav
         print("raw linear accel", auv_isam.imu_data.linear_acceleration)
-        print("gravity in bot frame", np.dot(auv_isam.last_imu_transform.T, auv_isam.g))
+        print("gravity in bot frame", transformed_grav)
         print("final accel with gravity removed", measAcc)
         measOmega = np.array([auv_isam.imu_data.angular_velocity.x, auv_isam.imu_data.angular_velocity.y, auv_isam.imu_data.angular_velocity.z])
         auv_isam.imu_accum.append(np.array([measAcc, measOmega]))
@@ -109,7 +111,7 @@ class AUV_ISAM:
 
         # Add a prior on pose x0. This indirectly specifies where the origin is.
         # 30cm std on x,y,z 0.1 rad on roll,pitch,yaw
-        self.noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.1, 0.1, 0.1, 0.3, 0.3, 0.3]))
+        self.noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.05, 0.05, 0.05, 0.05, 0.05, 0.05]))
         # self.graph.push_back(PriorFactorPose3(X(0), self.pose_0, self.noise))
 
         # Add imu priors
@@ -147,7 +149,6 @@ class AUV_ISAM:
 
         self.g_transform = np.eye(3)
 
-        self.imu_transforms = []
 
         self.grav = 9.81
         self.g = vector3(0, 0, -self.grav)
@@ -166,9 +167,9 @@ class AUV_ISAM:
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
         PARAMS = gtsam.PreintegrationParams.MakeSharedU(g)
         I = np.eye(3)
-        PARAMS.setAccelerometerCovariance(I * 0.1)
-        PARAMS.setGyroscopeCovariance(I * 0.1)
-        PARAMS.setIntegrationCovariance(I * 0.1)
+        PARAMS.setAccelerometerCovariance(I * 1e-5 ) 
+        PARAMS.setGyroscopeCovariance(I * 1e-5 ) 
+        PARAMS.setIntegrationCovariance(I * 1e-5 ) 
         PARAMS.setUse2ndOrderCoriolis(False)
         PARAMS.setOmegaCoriolis(vector3(0, 0, 0))
 
@@ -259,7 +260,7 @@ class AUV_ISAM:
 
 
     def create_imu_factor_batch(self, index):
-        delta_t = .25
+        delta_t = .5
         self.accum.integrateMeasurement(self.imu_accum[index][0], self.imu_accum[index][1], delta_t)
         ## TODO maybe add multiple imu and reset
         imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
@@ -298,7 +299,6 @@ class AUV_ISAM:
                 dvlFactor = self.create_dvl_factor_batch(i)
                 self.batch_graph.push_back(imuFactor)
                 self.accum.resetIntegration()
-
                 # self.batch_graph.push_back(dvlFactor)
                 # print(num_factors)
                 
@@ -330,8 +330,8 @@ if __name__ == '__main__':
                                             transform.transform.rotation.x, 
                                             transform.transform.rotation.y, 
                                             transform.transform.rotation.z).matrix()
-            callback_imu_transform(transform_mat)
             print('got transform')
+            callback_imu_transform(transform_mat)
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             print("exception in imu transform lookup loop, using last transform")
 
@@ -351,7 +351,6 @@ if __name__ == '__main__':
         if 'play' not in '\t'.join(rosnode.get_node_names()):
 
             auv_isam.do_accum = True
-            print("num transforms: ", len(auv_isam.imu_transforms))
             print("odom lentgth:", len(auv_isam.odom_accum))
             print("imu lentgth:", len(auv_isam.imu_accum))
 
@@ -362,7 +361,7 @@ if __name__ == '__main__':
 
             break
         
-        rospy.sleep(0.25)
+        rospy.sleep(0.5)
     plot.plot_trajectory(1, results)
     plt.show()
 
