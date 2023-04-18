@@ -15,6 +15,8 @@ import sys
 import tf2_ros
 from functools import partial
 
+from scipy.signal import butter,filtfilt
+
 
 import math
 
@@ -76,8 +78,30 @@ def callback_imu_transform(transform):
 
 
         auv_isam.dvl_accum.append(auv_isam.dvl)
-    
-    # auv_isam.imu_transforms.append(transform)
+
+## ## Adds all most recent values to arrays 
+def record_all_data():
+    auv_isam.odom_accum.append(auv_isam.odom)
+
+    imu_transform = gtsam.Rot3.Quaternion(auv_isam.imu_data.orientation.w, 
+                                          auv_isam.imu_data.orientation.x, 
+                                          auv_isam.imu_data.orientation.y, 
+                                          auv_isam.imu_data.orientation.z).matrix()
+
+    transformed_grav = (np.dot(imu_transform, auv_isam.g))
+
+    measAcc = np.array([auv_isam.imu_data.linear_acceleration.x, 
+                        auv_isam.imu_data.linear_acceleration.y, 
+                        auv_isam.imu_data.linear_acceleration.z]) + transformed_grav
+    print("raw linear accel", auv_isam.imu_data.linear_acceleration)
+    print("gravity in bot frame", transformed_grav)
+    print("final accel with gravity removed", measAcc)
+    measOmega = np.array([auv_isam.imu_data.angular_velocity.x, auv_isam.imu_data.angular_velocity.y, auv_isam.imu_data.angular_velocity.z])
+    auv_isam.imu_accum.append(np.array([measAcc, measOmega]))
+    auv_isam.imu_accum_indices.append(len(auv_isam.imu_accum_all) - 1)
+
+
+    auv_isam.dvl_accum.append(auv_isam.dvl)
 
 def callback_dvl_transform(transform):
     
@@ -157,6 +181,9 @@ class AUV_ISAM:
         self.do_accum = True
         self.odom_accum = []
         self.imu_accum = []
+        self.imu_accum_all = np.empty((0, 3))
+        self.imu_accum_ang_all = np.empty((0, 3))
+        self.imu_accum_indices = []
         self.dvl_accum = []
         self.batch_graph = gtsam.NonlinearFactorGraph()
         self.batch_initial = gtsam.Values()
@@ -167,9 +194,9 @@ class AUV_ISAM:
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
         PARAMS = gtsam.PreintegrationParams.MakeSharedU(g)
         I = np.eye(3)
-        PARAMS.setAccelerometerCovariance(I * 1e-5 ) 
-        PARAMS.setGyroscopeCovariance(I * 1e-5 ) 
-        PARAMS.setIntegrationCovariance(I * 1e-5 ) 
+        PARAMS.setAccelerometerCovariance(I * 1e-1 ) 
+        PARAMS.setGyroscopeCovariance(I * 1e-1 ) 
+        PARAMS.setIntegrationCovariance(I * 1e-1 ) 
         PARAMS.setUse2ndOrderCoriolis(False)
         PARAMS.setOmegaCoriolis(vector3(0, 0, 0))
 
@@ -188,6 +215,9 @@ class AUV_ISAM:
     def update_imu(self, data):
 
         self.imu_data = data
+        print(data)
+        self.imu_accum_all = np.append(self.imu_accum_all, [[self.imu_data.linear_acceleration.x, self.imu_data.linear_acceleration.y, self.imu_data.linear_acceleration.z]], axis=0)
+        self.imu_accum_ang_all = np.append(self.imu_accum_ang_all, [[self.imu_data.angular_velocity.x, self.imu_data.angular_velocity.y, self.imu_data.angular_velocity.z]], axis=0)
         # measAcc = np.array([data.linear_acceleration.x, data.linear_acceleration.y, data.linear_acceleration.z]) - np.dot(self.last_imu_transform, self.g)
         # #print("final accel with gravity removed", measAcc)
         # measOmega = np.array([data.angular_velocity.x, data.angular_velocity.y, data.angular_velocity.z])
@@ -261,7 +291,9 @@ class AUV_ISAM:
 
     def create_imu_factor_batch(self, index):
         delta_t = .25
-        self.accum.integrateMeasurement(self.imu_accum[index][0], self.imu_accum[index][1], delta_t)
+        print(self.imu_accum_indices)
+        print(self.smoothed_imu[:,self.imu_accum_indices[index]].T)
+        self.accum.integrateMeasurement(self.smoothed_imu[:,self.imu_accum_indices[index]].T, self.smoothed_imu_ang[:,self.imu_accum_indices[index]].T, delta_t)
         ## TODO maybe add multiple imu and reset
         imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), self.biasKey, self.accum)
         return imuFactor
@@ -273,6 +305,25 @@ class AUV_ISAM:
                         partial(self.velocity_error, np.array([self.dvl_accum[index]])),
                     )
         return dvl_factor
+    
+    def smooth_imu(self, data):
+        # low pass filter to smooth jittery IMU
+        # Filter requirements.
+        # T = 5.0         # Sample Period
+        fs = 30       # sample rate, Hz
+        cutoff = 1      # desired cutoff frequency of the filter, Hz ,      slightly higher than actual 1.2 Hz
+        nyq = 0.5 * fs  # Nyquist Frequency
+        order = 3       # sin wave can be approx represented as quadratic
+        # n = int(T * fs) # total number of samples
+
+        normal_cutoff = cutoff / nyq
+        # Get the filter coefficients 
+        print(auv_isam.imu_accum_all.shape)
+
+        b, a = butter(order, normal_cutoff, btype='low', analog=False)
+        y = filtfilt(b, a, data.T)
+
+        return y
 
     def createBatch(self):
         #poses = self.ODOMDATA
@@ -300,7 +351,6 @@ class AUV_ISAM:
                 self.batch_graph.push_back(imuFactor)
                 self.accum.resetIntegration()
                 # self.batch_graph.push_back(dvlFactor)
-                # print(num_factors)
                 
         return
 
@@ -335,16 +385,18 @@ if __name__ == '__main__':
 
     while not rospy.is_shutdown():
 
-        try:
-            transform = tfBuffer.lookup_transform( 'map', 'base_link', rospy.Time(0))
-            transform_mat = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
-                                            transform.transform.rotation.x, 
-                                            transform.transform.rotation.y, 
-                                            transform.transform.rotation.z).matrix()
-            print('got transform')
-            callback_imu_transform(transform_mat)
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            print("exception in imu transform lookup loop, using last transform")
+        # try:
+        #     transform = tfBuffer.lookup_transform( 'map', 'base_link', rospy.Time(0))
+        #     transform_mat = gtsam.Rot3.Quaternion(transform.transform.rotation.w, 
+        #                                     transform.transform.rotation.x, 
+        #                                     transform.transform.rotation.y, 
+        #                                     transform.transform.rotation.z).matrix()
+        #     print('got transform')
+        #     callback_imu_transform(transform_mat)
+        # except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+        #     print("exception in imu transform lookup loop, using last transform")
+
+
 
         # try:
         #     dvl_transform = tfBuffer.lookup_transform('map', 'dvl_link', rospy.Time(0))
@@ -358,8 +410,43 @@ if __name__ == '__main__':
         # except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
         #     print("exception in DVL transform lookup loop")
 
+        if auv_isam.imu_data is not None:
+            record_all_data()
+
 
         if 'play' not in '\t'.join(rosnode.get_node_names()):
+
+            # plot imu linear
+            fig, axs = plt.subplots(3)
+            axs[0].plot(list(range(len(auv_isam.imu_accum_all[:,0]))), auv_isam.imu_accum_all[:,0])
+            axs[1].plot(list(range(len(auv_isam.imu_accum_all[:,1]))), auv_isam.imu_accum_all[:,1])
+            axs[2].plot(list(range(len(auv_isam.imu_accum_all[:,2]))), auv_isam.imu_accum_all[:,2])
+            plt.show()
+
+            auv_isam.smoothed_imu = np.array(auv_isam.smooth_imu(auv_isam.imu_accum_all))
+
+            fig, axs = plt.subplots(3)
+            axs[0].plot(list(range(len(auv_isam.smoothed_imu[0]))), auv_isam.smoothed_imu[0])
+            axs[1].plot(list(range(len(auv_isam.smoothed_imu[1]))), auv_isam.smoothed_imu[1])
+            axs[2].plot(list(range(len(auv_isam.smoothed_imu[2]))), auv_isam.smoothed_imu[2])
+            plt.show()
+
+            # plot imu angular
+            fig, axs = plt.subplots(3)
+            axs[0].plot(list(range(len(auv_isam.imu_accum_all[:,0]))), auv_isam.imu_accum_all[:,0])
+            axs[1].plot(list(range(len(auv_isam.imu_accum_all[:,1]))), auv_isam.imu_accum_all[:,1])
+            axs[2].plot(list(range(len(auv_isam.imu_accum_all[:,2]))), auv_isam.imu_accum_all[:,2])
+            plt.show()
+
+            auv_isam.smoothed_imu_ang = np.array(auv_isam.smooth_imu(auv_isam.imu_accum_ang_all))
+
+            fig, axs = plt.subplots(3)
+            axs[0].plot(list(range(len(auv_isam.smoothed_imu_ang[0]))), auv_isam.smoothed_imu_ang[0])
+            axs[1].plot(list(range(len(auv_isam.smoothed_imu_ang[1]))), auv_isam.smoothed_imu_ang[1])
+            axs[2].plot(list(range(len(auv_isam.smoothed_imu_ang[2]))), auv_isam.smoothed_imu_ang[2])
+            plt.show()
+
+
 
             auv_isam.do_accum = True
             print("odom lentgth:", len(auv_isam.odom_accum))
@@ -376,6 +463,8 @@ if __name__ == '__main__':
 
     points = constr3DPoints(results)
     print(points)
+
+
     # print(results)
     #plot.plot_trajectory(1, results)
     #plt.show()
