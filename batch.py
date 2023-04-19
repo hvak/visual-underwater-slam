@@ -6,6 +6,7 @@ from __future__ import print_function
 import rospy
 import rosnode
 #from uslam.isam import AUV_ISAM
+from std_msgs.msg import String
 from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
@@ -14,6 +15,7 @@ from typing import Optional, List
 import sys
 import tf2_ros
 from functools import partial
+import json
 
 from scipy.signal import butter,filtfilt
 
@@ -40,22 +42,19 @@ from gtsam.utils import plot
 ################################
 
 def callback_imu(data):
-    auv_isam.update_imu(data) # whatever this is
-    # auv_isam.imu_transforms.append(auv_isam.last_imu_transform)
-
-    # print("update imu")
+    auv_isam.update_imu(data)
 
 def callback_odom(data):
     auv_isam.update_odom(data)
-    # print("update odom")
 
 def callback_mavros_vel(data):
     auv_isam.update_mavros_vel(data)
-    #print(data)
 
 def callback_dvl(data):
     auv_isam.update_dvl(data)
-    #print(data)
+
+def callback_pressure(data):
+    auv_isam.update_pressure(data)
 
 def callback_imu_transform(transform):
     
@@ -83,6 +82,7 @@ def callback_imu_transform(transform):
 def record_all_data():
     auv_isam.odom_accum.append(auv_isam.odom)
     auv_isam.dvl_accum.append(auv_isam.dvl)
+    auv_isam.depth_accum.append(auv_isam.depth)
 
     index = int(len(auv_isam.imu_factors))
 
@@ -173,6 +173,7 @@ class AUV_ISAM:
         self.do_accum = True
         self.odom_accum = []
         self.imu_accum = []
+        self.depth_accum = []
         self.imu_accum_all = np.empty((0, 3))
         self.imu_accum_ang_all = np.empty((0, 3))
         self.imu_accum_indices = []
@@ -209,6 +210,14 @@ class AUV_ISAM:
 
         self.prev_imu_data = self.imu_data
         self.imu_data = data
+
+        if self.imu_data.angular_velocity.x > 0.3: self.imu_data.angular_velocity.x = 0.3
+        if self.imu_data.angular_velocity.y > 0.3: self.imu_data.angular_velocity.y = 0.3
+        if self.imu_data.angular_velocity.z > 0.3: self.imu_data.angular_velocity.z = 0.3
+
+        if self.imu_data.angular_velocity.x < -0.3: self.imu_data.angular_velocity.x = -0.3
+        if self.imu_data.angular_velocity.y < -0.3: self.imu_data.angular_velocity.y = -0.3
+        if self.imu_data.angular_velocity.z < -0.3: self.imu_data.angular_velocity.z = -0.3
         
         imu_transform = gtsam.Rot3.Quaternion(self.imu_data.orientation.w, 
                                           self.imu_data.orientation.x, 
@@ -247,11 +256,18 @@ class AUV_ISAM:
                      "j": data.pose.pose.orientation.y,
                      "k": data.pose.pose.orientation.z, 
                      "q": data.pose.pose.orientation.w}
-
         return
     
     def update_dvl(self, data):
         self.dvl = np.array([ data.twist.linear.x, data.twist.linear.y, data.twist.linear.z])
+        return
+    
+    def update_pressure(self, data):
+        dict = json.loads(data.data)
+        measured_pressure = dict['press_abs'] * 100
+        pressure_diff = measured_pressure - 98250.0
+        depth = pressure_diff / (997 * 9.81)
+        self.depth = depth
         return
     
 
@@ -342,7 +358,7 @@ class AUV_ISAM:
             currPose = self.odom_accum[i]
             #print(each)
             rot = gtsam.Rot3.Quaternion(currPose['q'], currPose['i'], currPose['j'], currPose['k'])
-            t = gtsam.Point3(currPose['x'], currPose['y'], currPose['z'])
+            t = gtsam.Point3(currPose['x'], currPose['y'], self.depth_accum[i])
             #print(rot)
             pose = gtsam.Pose3(rot, t)
             if i == 0:
@@ -386,6 +402,8 @@ if __name__ == '__main__':
     rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
     # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
     rospy.Subscriber('/dvl/twist', TwistStamped, callback_dvl)
+
+    rospy.Subscriber('/BlueROV/pressure2', String, callback_pressure)
 
     auv_isam = AUV_ISAM()
 
@@ -438,6 +456,15 @@ if __name__ == '__main__':
             auv_isam.createBatch()
             results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
 
+            # marginals = gtsam.Marginals(auv_isam.batch_graph, results)
+            # print("Covariance on bias:\n", marginals.marginalCovariance(auv_isam.biasKey))
+            # for i in range(auv_isam.timestamp - 1):
+            #     print("Covariance on pose {}:\n{}\n".format(
+            #         i, marginals.marginalCovariance(X(i))))
+            #     print("Covariance on vel {}:\n{}\n".format(
+            #         i, marginals.marginalCovariance(V(i))))
+
+
             auv_isam.timestamp += 1
 
             break
@@ -457,6 +484,6 @@ if __name__ == '__main__':
     y = [auv_isam.odom_accum[i]['y'] for i in range(len(auv_isam.odom_accum))]
     z = [auv_isam.odom_accum[i]['z'] for i in range(len(auv_isam.odom_accum))]
     ax.plot3D(x, y, z, color='orange', linewidth=2)
-    ax.plot3D(points[:,0], points[:,1], points[:,2], color='blue')
+    ax.plot3D(points[1:,0], points[1:,1], points[1:,2], color='blue')
 
     plt.show()
