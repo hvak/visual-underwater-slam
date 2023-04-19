@@ -211,13 +211,13 @@ class AUV_ISAM:
         self.prev_imu_data = self.imu_data
         self.imu_data = data
 
-        if self.imu_data.angular_velocity.x > 0.3: self.imu_data.angular_velocity.x = 0.3
-        if self.imu_data.angular_velocity.y > 0.3: self.imu_data.angular_velocity.y = 0.3
-        if self.imu_data.angular_velocity.z > 0.3: self.imu_data.angular_velocity.z = 0.3
+        if self.imu_data.angular_velocity.x > 0.2: self.imu_data.angular_velocity.x = 0.2
+        if self.imu_data.angular_velocity.y > 0.2: self.imu_data.angular_velocity.y = 0.2
+        if self.imu_data.angular_velocity.z > 0.2: self.imu_data.angular_velocity.z = 0.2
 
-        if self.imu_data.angular_velocity.x < -0.3: self.imu_data.angular_velocity.x = -0.3
-        if self.imu_data.angular_velocity.y < -0.3: self.imu_data.angular_velocity.y = -0.3
-        if self.imu_data.angular_velocity.z < -0.3: self.imu_data.angular_velocity.z = -0.3
+        if self.imu_data.angular_velocity.x < -0.2: self.imu_data.angular_velocity.x = -0.2
+        if self.imu_data.angular_velocity.y < -0.2: self.imu_data.angular_velocity.y = -0.2
+        if self.imu_data.angular_velocity.z < -0.2: self.imu_data.angular_velocity.z = -0.2
         
         imu_transform = gtsam.Rot3.Quaternion(self.imu_data.orientation.w, 
                                           self.imu_data.orientation.x, 
@@ -477,13 +477,22 @@ if __name__ == '__main__':
     # print(results)
     #plot.plot_trajectory(1, results)
     #plt.show()
-
+    
     fig = plt.figure()
     ax = plt.axes(projection='3d')
-    x = [auv_isam.odom_accum[i]['x'] for i in range(len(auv_isam.odom_accum))]
-    y = [auv_isam.odom_accum[i]['y'] for i in range(len(auv_isam.odom_accum))]
-    z = [auv_isam.odom_accum[i]['z'] for i in range(len(auv_isam.odom_accum))]
+    x = np.array([auv_isam.odom_accum[i]['x'] for i in range(len(auv_isam.odom_accum))])
+    y = np.array([auv_isam.odom_accum[i]['y'] for i in range(len(auv_isam.odom_accum))])
+    z = np.array([auv_isam.odom_accum[i]['z'] for i in range(len(auv_isam.odom_accum))])
     ax.plot3D(x, y, z, color='orange', linewidth=2)
     ax.plot3D(points[1:,0], points[1:,1], points[1:,2], color='blue')
 
     plt.show()
+
+    ## MSE
+    initial_depth = 0.7433
+    odom_raw = np.hstack((x.reshape(-1, 1), y.reshape(-1,1), z.reshape(-1,1)))
+    odom_raw = odom_raw - np.array([0, 0, initial_depth])
+
+    squared_diff = np.square(odom_raw - points[1:, :])
+    mse = np.mean(squared_diff)
+    print("MSE: ", mse)
