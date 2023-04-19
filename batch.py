@@ -1,24 +1,16 @@
-# pylint: disable=invalid-name, E1101
-
-from __future__ import print_function
-
-
 import rospy
-import rosnode
-#from uslam.isam import AUV_ISAM
+from std_msgs.msg import String
 from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
-# from waterlinked_a50_ros_driver.msg import DVL
-from typing import Optional, List
-import sys
+from waterlinked_a50_ros_driver.msg import DVL
+
+import rosnode
 import tf2_ros
 from functools import partial
+from typing import Optional, List
+import json
 
-from scipy.signal import butter,filtfilt
-
-
-import math
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,238 +21,178 @@ from gtsam import (ISAM2, BetweenFactorConstantBias, Cal3_S2,
                    ConstantTwistScenario, ImuFactor, NonlinearFactorGraph,
                    PinholeCameraCal3_S2, Point3, Pose3,
                    PriorFactorConstantBias, PriorFactorPose3,
-                   PriorFactorVector, Rot3, Values)
-from gtsam.symbol_shorthand import B, V, X
+                   PriorFactorVector, Rot3, Values, PriorFactorPoint3, NavState, 
+                   Cal3_S2Stereo, StereoPoint2, GenericStereoFactor3D)
+from gtsam.symbol_shorthand import B, V, X, L
 from gtsam.utils import plot
-
-###############################
-#
-#   Callbacks, Global
-#
-################################
-
-def callback_imu(data):
-    auv_isam.update_imu(data) # whatever this is
-    # auv_isam.imu_transforms.append(auv_isam.last_imu_transform)
-
-    # print("update imu")
-
-def callback_odom(data):
-    auv_isam.update_odom(data)
-    # print("update odom")
-
-def callback_mavros_vel(data):
-    auv_isam.update_mavros_vel(data)
-    #print(data)
-
-def callback_dvl(data):
-    auv_isam.update_dvl(data)
-    #print(data)
-
-def callback_imu_transform(transform):
-    
-    auv_isam.last_imu_transform = transform
-    if auv_isam.do_accum == True:
-        auv_isam.odom_accum.append(auv_isam.odom)
-
-        print(auv_isam.last_imu_transform)
-
-        transformed_grav = np.flip(np.dot(auv_isam.last_imu_transform.T, auv_isam.g))
-
-        measAcc = np.array([auv_isam.imu_data.linear_acceleration.x, 
-                            auv_isam.imu_data.linear_acceleration.y, 
-                            auv_isam.imu_data.linear_acceleration.z]) - transformed_grav
-        print("raw linear accel", auv_isam.imu_data.linear_acceleration)
-        print("gravity in bot frame", transformed_grav)
-        print("final accel with gravity removed", measAcc)
-        measOmega = np.array([auv_isam.imu_data.angular_velocity.x, auv_isam.imu_data.angular_velocity.y, auv_isam.imu_data.angular_velocity.z])
-        auv_isam.imu_accum.append(np.array([measAcc, measOmega]))
+import message_filters
+from gtsam_vio.msg import CameraMeasurement
 
 
-        auv_isam.dvl_accum.append(auv_isam.dvl)
+def imu_callback(imu):
+    global old_time
+    slam.update_imu(imu, 0.005)
+    old_time = imu.header.stamp
 
-## ## Adds all most recent values to arrays 
-def record_all_data():
-    auv_isam.odom_accum.append(auv_isam.odom)
-    auv_isam.dvl_accum.append(auv_isam.dvl)
+def pressure_callback(pressure):
+    slam.process_depth(pressure)
 
-    index = int(len(auv_isam.imu_factors))
+def ts_callback(odom, dvl, landmark):
 
-    if index == 0:
-        ## THIS WILL NEVER GET ADDED 
-        imuFactor = ImuFactor(X(0), V(0), X(0), V(0), auv_isam.biasKey, auv_isam.accum)
-    else:
-        imuFactor = ImuFactor(X(index - 1), V(index - 1), X(index), V(index), auv_isam.biasKey, auv_isam.accum)
-    auv_isam.imu_factors.append(imuFactor)
-    auv_isam.accum.resetIntegration()
+    try:
+        ## todo make sure transform time matches pose time?
+        #transform = tfBuffer.lookup_transform('zedm_left_camera_optical_frame', 'world', rospy.Time(0))
+        transform = tf_buffer.lookup_transform('zedm_left_camera_optical_frame', 'world', rospy.Time(0))
+        trans = Point3(transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z)
+        rot = Rot3.Quaternion(transform.transform.rotation.w, transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z)
+        slam.zed_world_transform = (rot, trans)
+        
+    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+        rospy.logerr("Error getting zed to world transform!")
+        pass
 
-def callback_dvl_transform(transform):
-    
-    auv_isam.last_dvl_transform = transform
+    if (slam.depth != None):
+        slam.batch_update(odom, dvl, slam.depth, landmark)
+
+def constr3DPoints(values):
+    i = 0
+    points = np.empty((1,3))
+    while values.exists(X(i)):
+        pose_i = values.atPose3(X(i))
+        point = np.array([pose_i.x(), pose_i.y(), pose_i.z()])
+        points = np.append(points, [point], axis=0)
+        i += 1
+
+    print(values.exists(i))
+
+    return points
 
 def vector3(x, y, z):
     """Create 3d double numpy array."""
     return np.array([x, y, z], dtype=float)
 
+class AUV_ISAM():
 
-g = 9.81
-n_gravity = vector3(0, 0, -g)
+    def __init__(self) -> None:
 
-###############################
-#
-#   ISAM Class
-#
-################################
-
-class AUV_ISAM:
-    def __init__(self):
-        self.PARAMS, self.BIAS_COVARIANCE, self.DELTA = self.preintegration_parameters()
-        self.radius = 30
-        self.pose_0 = gtsam.Pose3(gtsam.Rot3([[0, 0, -1], [1, 0, 0], [0, -1, 0]]), [0, 0, 0])
-        self.delta_t = 1.0/18  # makes for 10 degrees per step
-        self.angular_velocity = math.radians(180)  # rad/sec
-        self.graph = NonlinearFactorGraph()
+        #ISAM stuff
         self.isam = ISAM2()
-        self.initialEstimate = Values()
-        self.timestamp = 0
+        self.graph = NonlinearFactorGraph()
+        self.initial_estimate = Values()
+        self.result = Values()
+        self.prev_pose = Pose3()
+        self.prev_vel = Point3()
+        self.timestep = 0
 
-        # Add a prior on pose x0. This indirectly specifies where the origin is.
-        # 30cm std on x,y,z 0.1 rad on roll,pitch,yaw
-        self.noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.05, 0.05, 0.05, 0.05, 0.05, 0.05]))
-        # self.graph.push_back(PriorFactorPose3(X(0), self.pose_0, self.noise))
-
-        # Add imu priors
-        self.biasKey = B(0)
-        self.biasnoise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
-        # self.biasprior = PriorFactorConstantBias(self.biasKey, gtsam.imuBias.ConstantBias(),self. biasnoise)
-        # self.graph.push_back(self.biasprior)
-        # self.initialEstimate.insert(self.biasKey, gtsam.imuBias.ConstantBias())
-        self.velnoise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
-
-        # Calculate with correct initial velocity
-        self.n_velocity = vector3(0, 0, 0)
-        # self.velprior = PriorFactorVector(V(0), self.n_velocity, self.velnoise)
-        # self.graph.push_back(self.velprior)
-        self.initialEstimate.insert(V(0), self.n_velocity)
-
-        self.accum = gtsam.PreintegratedImuMeasurements(self.PARAMS)
-        accBias = np.array([-0.3, 0.1, 0.2])
-        gyroBias = np.array([0.1, 0.3, -0.1])
-        self.bias = gtsam.imuBias.ConstantBias(accBias, gyroBias)
-
-
-        ### DATA TYPES
-        self.mav_vel = None
-        self.odom = None
-        self.dvl = None
-        self.imu_data = None
-        self.prev_imu_data = None
-
-        ### DATA NOISE
-        self.dvl_model = gtsam.noiseModel.Isotropic.Sigma(3, 0.1) ## Bagoren et al
-
-
-        self.last_imu_transform = np.eye(3)
-        self.last_dvl_transform = np.eye(3)
-
-        self.g_transform = np.eye(3)
-
-
+        #IMU
         self.grav = 9.81
-        self.g = vector3(0, 0, -self.grav)
+        self.g = np.array([0, 0, -self.grav])
+        self.PARAMS, self.BIAS_COVARIANCE, self.DELTA = self.preintegration_parameters()
+        self.imu_preintegrated = gtsam.PreintegratedImuMeasurements(self.PARAMS)
+        self.prev_bias = gtsam.imuBias.ConstantBias()
 
-        # batch
-        self.do_accum = True
+        # Noise models
+        self.pose_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.1, 0.1, 0.1, 0.3, 0.3, 0.3]))
+        self.vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
+        self.bias_noise = self.BIAS_COVARIANCE
+        self.dvl_noise = gtsam.noiseModel.Isotropic.Sigma(3, 0.1)
+
+        self.imu_data = []
         self.odom_accum = []
-        self.imu_accum = []
-        self.imu_accum_all = np.empty((0, 3))
-        self.imu_accum_ang_all = np.empty((0, 3))
-        self.imu_accum_indices = []
-        self.imu_factors = []
+        self.odom_compare = []
         self.dvl_accum = []
-        self.batch_graph = gtsam.NonlinearFactorGraph()
-        self.batch_initial = gtsam.Values()
+        self.imu_accum = []
+        self.depth = None
+    
+        self.landmark_accum = []
+        self.landmarks = []
+        self.zed_world_transform = None
+        self.baseline = 0.063
+        self.intrinsic = [1827.0, 1827.5999755859375, 968.9000244140625, 561.4000244140625]
+        self.f = (self.intrinsic[0] + self.intrinsic[1]) / 2.0
+        self.cx = self.intrinsic[2]
+        self.cy = self.intrinsic[3]
+        self.K = Cal3_S2Stereo(self.intrinsic[0], self.intrinsic[1], 0.0, self.cx, self.cy, self.baseline)
+        self.resolution_x = 1920
+        self.resolution_y = 1080
+        self.landmark_noise = gtsam.noiseModel.Isotropic.Sigma(3, 10)
 
+
+        
+    def process_depth(self, data):
+        dict = json.loads(data.data)
+        measured_pressure = dict['press_abs'] * 100
+        pressure_diff = measured_pressure - 98250.0
+        self.depth = pressure_diff / (997 * 9.81)
+    
+    def process_odom(self, odom, depth):
+        pos = odom.pose.pose.position
+        quat = odom.pose.pose.orientation
+        rot = Rot3.Quaternion(quat.w, quat.x, quat.y, quat.z)
+        point = Point3(pos.x, pos.y, pos.z)
+        point_adjust = Point3(pos.x, pos.y, depth)
+        pose_adjust = Pose3(rot, point_adjust)
+        pose_norm = Pose3(rot, point)
+        return pose_adjust, pose_norm
+
+    def update_imu(self, imu, dt):
+        acc = np.array([imu.linear_acceleration.x, imu.linear_acceleration.y, imu.linear_acceleration.z])
+        gyro = np.array([imu.angular_velocity.x, imu.angular_velocity.y, imu.angular_velocity.z])
+        self.imu_data.append(np.hstack((acc, gyro)))
+
+
+    def get_landmarks(self, data):
+
+        #should give a list of features
+        landmarks = []
+        if self.zed_world_transform != None:
+            for feature in data.features:
+                id = feature.id
+
+                uL = (feature.u0 + 1) * 0.5 * self.resolution_x;
+                uR = (feature.u1 + 1) * 0.5 * self.resolution_x
+                v = ((feature.v0 + feature.v1) / 2.0 + 1) * 0.5 * self.resolution_y
+
+                d = uR - uL
+                x = uL
+                y = v
+                W = d / self.baseline
+                x_cam = (x - self.cx) / W
+                y_cam = (y - self.cy) / W
+                z_cam = self.f / W
+
+                cam_point = np.array([[x_cam], [y_cam], [z_cam]])
+                #print(self.cam_map_transform)
+                world_point = self.zed_world_transform[0].matrix() @ cam_point + self.zed_world_transform[1].reshape(3,1)
+                #print(world_point)
+                landmarks.append({
+                    'id': id,
+                    'pose': world_point.reshape((3,)),
+                    'uL': uL,
+                    'uR': uR,
+                    'v': v
+                })
+
+        return landmarks                    
 
     def preintegration_parameters(self):
         # IMU preintegration parameters
         # Default Params for a Z-up navigation frame, such as ENU: gravity points along negative Z-axis
-        PARAMS = gtsam.PreintegrationParams.MakeSharedU(g)
+        PARAMS = gtsam.PreintegrationParams.MakeSharedU(self.grav)
         I = np.eye(3)
-        PARAMS.setAccelerometerCovariance(I * 1e-1 ) 
-        PARAMS.setGyroscopeCovariance(I * 1e-1 ) 
-        PARAMS.setIntegrationCovariance(I * 1e-1 ) 
+        PARAMS.setAccelerometerCovariance(I * 8.999999999999999e-08)
+        PARAMS.setGyroscopeCovariance(I * 1.2184696791468346e-07)
+        PARAMS.setIntegrationCovariance(I * 1e-07)
         PARAMS.setUse2ndOrderCoriolis(False)
-        PARAMS.setOmegaCoriolis(vector3(0, 0, 0))
+        PARAMS.setOmegaCoriolis(np.array([0,0,0], dtype=float))
 
         BIAS_COVARIANCE = gtsam.noiseModel.Isotropic.Variance(6, 0.1)
         DELTA = Pose3(Rot3.Rodrigues(0, 0, 0),
                     Point3(0.05, -0.10, 0.20))
 
         return PARAMS, BIAS_COVARIANCE, DELTA
+
     
-    ###############################
-    #
-    #   Update Data
-    #
-    ################################
-    
-    def update_imu(self, data):
-
-        self.prev_imu_data = self.imu_data
-        self.imu_data = data
-        
-        imu_transform = gtsam.Rot3.Quaternion(self.imu_data.orientation.w, 
-                                          self.imu_data.orientation.x, 
-                                          self.imu_data.orientation.y, 
-                                          self.imu_data.orientation.z).matrix()
-
-        transformed_grav = (np.dot(imu_transform, self.g))
-
-        measAcc = np.array([self.imu_data.linear_acceleration.x, 
-                            self.imu_data.linear_acceleration.y, 
-                            self.imu_data.linear_acceleration.z]) + transformed_grav
-        print("raw linear accel", self.imu_data.linear_acceleration)
-        print("gravity in bot frame", transformed_grav)
-        print("final accel with gravity removed", measAcc)
-        measOmega = np.array([self.imu_data.angular_velocity.x, self.imu_data.angular_velocity.y, self.imu_data.angular_velocity.z])
-
-
-        self.imu_accum_all = np.append(self.imu_accum_all, [measAcc], axis=0)
-        self.imu_accum_ang_all = np.append(self.imu_accum_ang_all, [measOmega], axis=0)
-
-        current_time_s = self.imu_data.header.stamp.secs
-        current_time_ns = self.imu_data.header.stamp.nsecs
-        prev_time_s = self.prev_imu_data.header.stamp.secs
-        prev_time_ns = self.prev_imu_data.header.stamp.nsecs
-
-        dt = (current_time_s - prev_time_s) + 1e-9*(current_time_ns - prev_time_ns)
-        self.accum.integrateMeasurement(measAcc, measOmega, dt)
-
-        return
-
-    def update_odom(self, data):
-        self.odom = {"x": data.pose.pose.position.x, 
-                     "y": data.pose.pose.position.y,
-                     "z": data.pose.pose.position.z,
-                     "i": data.pose.pose.orientation.x,
-                     "j": data.pose.pose.orientation.y,
-                     "k": data.pose.pose.orientation.z, 
-                     "q": data.pose.pose.orientation.w}
-
-        return
-    
-    def update_dvl(self, data):
-        self.dvl = np.array([ data.twist.linear.x, data.twist.linear.y, data.twist.linear.z])
-        return
-    
-
-    ###############################
-    #
-    #   Unary Factor Errors
-    #
-    ################################
-
     def velocity_error(
         self,
         measurement: np.ndarray,
@@ -273,11 +205,13 @@ class AUV_ISAM:
         ana notes: retaining bagoren et al's jacobian and typing (list, optional keywords)
         """
         
-        key = this.keys()[0] # key = timestamp
-        vel_estimate = values.atPoint3(V(key)) # get previous estimates from graph
-        pose_estimate = values.atPose3(X(key))
+        key1 = this.keys()[0] # key = timestamp
+        key2 = this.keys()[1] # key = timestamp
+        vel_estimate = values.atVector(key1) # get previous estimates from graph
+        pose_estimate = values.atPose3(key2)
 
         rot_mat = pose_estimate.rotation().matrix()
+
         vx = vel_estimate[0]
         vy = vel_estimate[1]
         vz = vel_estimate[2]
@@ -296,106 +230,106 @@ class AUV_ISAM:
         # print(error)
         if jacobians is not None:
             jacobians[0] = rot_mat
+            jacobians[1] = rot_mat
         return error
 
-
-    def create_imu_factor_batch(self, index):
-        # delta_t = .25
-        # self.accum.integrateMeasurement(self.smoothed_imu[:,self.imu_accum_indices[index]].T, self.smoothed_imu_ang[:,self.imu_accum_indices[index]].T, delta_t)
-        ## TODO maybe add multiple imu and reset
-        imuFactor = self.imu_factors[index]
-        return imuFactor
     
-    def create_dvl_factor_batch(self, index):
+
+    def create_imu_factor(self):
+        imu_factor = ImuFactor(X(self.timestep-1), V(self.timestep-1), X(self.timestep), V(self.timestep), B(0), self.imu_preintegrated)
+        return imu_factor
+
+    def create_dvl_factor(self, dvl):
+
+        measurement = np.array([[dvl.twist.linear.x, dvl.twist.linear.y, dvl.twist.linear.z]])
+
         dvl_factor = gtsam.CustomFactor(
-                        self.dvl_model,
-                        [index], 
-                        partial(self.velocity_error, np.array([self.dvl_accum[index]])),
+                        self.dvl_noise,
+                        [V(self.timestep), X(self.timestep)], # TODO not necessarily the same as the data received time?
+                        partial(self.velocity_error, measurement),
                     )
         return dvl_factor
     
-    def smooth_imu(self, data):
-        # low pass filter to smooth jittery IMU
-        # Filter requirements.
-        # T = 5.0         # Sample Period
-        fs = 30       # sample rate, Hz
-        cutoff = 0.5      # desired cutoff frequency of the filter, Hz ,      slightly higher than actual 1.2 Hz
-        nyq = 0.5 * fs  # Nyquist Frequency
-        order = 3       # sin wave can be approx represented as quadratic
-        # n = int(T * fs) # total number of samples
 
-        normal_cutoff = cutoff / nyq
-        # Get the filter coefficients 
+    def batch_update(self, odom, dvl, depth, landmarks):
 
-        b, a = butter(order, normal_cutoff, btype='low', analog=False)
-        y = filtfilt(b, a, data.T)
+        pose_adjust, pose_norm = self.process_odom(odom, depth)
+        self.odom_accum.append(pose_adjust)
+        self.odom_compare.append(pose_norm)
 
-        return y
+        self.dvl_accum.append(dvl)
 
-    def createBatch(self):
-        #poses = self.ODOMDATA
-        # self.update_imu(None)
-        self.batch_initial.insert(self.biasKey, self.bias)
-        velocity = vector3(0,0,0)
+        self.imu_accum.append(self.imu_data)
+        self.imu_data = []
+
+
+        lm = self.get_landmarks(landmarks)
+        self.landmark_accum.append(lm)
+
+
+
+    def batch_create(self, with_landmark=True):
+        self.initial_estimate = Values()
+        self.graph = NonlinearFactorGraph()
+
+        self.initial_estimate.insert(B(0), self.prev_bias)
         for i in range(len(self.odom_accum)):
+            self.timestep = i
             #Prior Estimate
-            currPose = self.odom_accum[i]
-            #print(each)
-            rot = gtsam.Rot3.Quaternion(currPose['q'], currPose['i'], currPose['j'], currPose['k'])
-            t = gtsam.Point3(currPose['x'], currPose['y'], currPose['z'])
-            #print(rot)
-            pose = gtsam.Pose3(rot, t)
-            if i == 0:
-                PRIOR_NOISE = gtsam.noiseModel.Isotropic.Sigma(6, 0.25)
-                self.batch_graph.add(gtsam.PriorFactorPose3(X(0), pose, PRIOR_NOISE))
-                self.batch_initial.insert(X(i), pose)
-                self.batch_initial.insert(V(i), velocity)
+            pose = self.odom_accum[i]
+            velocity = vector3(0,0,0)
+            if i == 0:   
+                self.graph.add(gtsam.PriorFactorPose3(X(0), pose, self.pose_noise))
+                self.graph.add(gtsam.PriorFactorVector(V(0), velocity, self.vel_noise))
+                self.initial_estimate.insert(X(i), pose)
+                self.initial_estimate.insert(V(i), velocity)
             else:
-                self.batch_initial.insert(X(i), pose)
-                self.batch_initial.insert(V(i), velocity)
-                imuFactor = self.create_imu_factor_batch(i)
-                dvlFactor = self.create_dvl_factor_batch(i)
-                self.batch_graph.push_back(imuFactor)
-                # self.batch_graph.push_back(dvlFactor)
                 
-        return
+                self.initial_estimate.insert(X(i), pose)
+                self.initial_estimate.insert(V(i), velocity)
+                for imu in self.imu_accum[i]:
+                    self.imu_preintegrated.integrateMeasurement(imu[:3], imu[3:], 0.005)
+                self.graph.push_back(self.create_imu_factor())
+                self.graph.push_back(self.create_dvl_factor(self.dvl_accum[i]))
+                self.imu_preintegrated.resetIntegration()
 
-    
-def constr3DPoints(values):
-    i = 0
-    points = np.empty((1,3))
-    while values.exists(X(i)):
-        pose_i = values.atPose3(X(i))
-        point = np.array([pose_i.x(), pose_i.y(), pose_i.z()])
-        points = np.append(points, [point], axis=0)
-        i += 1
+                if with_landmark:
+                    for landmark in self.landmark_accum[i]:
+                        if not self.initial_estimate.exists(L(landmark['id'])):
+                            self.initial_estimate.insert(L(landmark['id']), landmark['pose'])
 
-    print(values.exists(i))
+                        stereo_factor = GenericStereoFactor3D(
+                            StereoPoint2(landmark['uL'], landmark['uR'], landmark['v']),
+                            self.landmark_noise,
+                            X(i), L(landmark['id']), self.K
+                        )
+                        self.graph.push_back(stereo_factor)
 
-    return points
+        
 
 if __name__ == '__main__':
-    rospy.init_node('data_listener', anonymous=True)
+    rospy.init_node("auv_slam", anonymous=True)
 
-    tfBuffer = tf2_ros.Buffer()
-    listener = tf2_ros.TransformListener(tfBuffer)
 
-    rospy.Subscriber('/zedm/zed_node/imu/data', Imu, callback_imu)
-    # rospy.Subscriber('/mavros/imu/data', Imu, callback_imu)
-    # rospy.Subscriber('/zedm/zed_node/odom', Odometry, callback_odom)
-    rospy.Subscriber('/dvl/local_position', PoseWithCovarianceStamped, callback_odom)
-    # rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, callback_mavros_vel)
-    rospy.Subscriber('/dvl/twist', TwistStamped, callback_dvl)
+    slam = AUV_ISAM()
 
-    auv_isam = AUV_ISAM()
+    tf_buffer = tf2_ros.Buffer()
+    listener = tf2_ros.TransformListener(tf_buffer)
 
+    old_time = rospy.Time.now()
+    rospy.Subscriber('/zedm/zed_node/imu/data', Imu, imu_callback)
+    rospy.Subscriber('/BlueROV/pressure2', String, pressure_callback)
+    odom_sub = message_filters.Subscriber('/dvl/local_position', PoseWithCovarianceStamped)
+    dvl_sub = message_filters.Subscriber('/dvl/twist', TwistStamped)
+    landmark_sub = message_filters.Subscriber('/auv/image_processor/features', CameraMeasurement)
+
+    ts = message_filters.ApproximateTimeSynchronizer([odom_sub, dvl_sub, landmark_sub], 10, 0.2, allow_headerless=True)
+    ts.registerCallback(ts_callback)
+
+    rate = rospy.Rate(5)# Hz
+
+    old_time = rospy.Time.now()
     while not rospy.is_shutdown():
-
-    
-
-        if auv_isam.prev_imu_data is not None:
-            record_all_data()
-
 
         if 'play' not in '\t'.join(rosnode.get_node_names()):
 
@@ -431,32 +365,38 @@ if __name__ == '__main__':
 
 
 
-            auv_isam.do_accum = True
-            print("odom lentgth:", len(auv_isam.odom_accum))
-            print("imu lentgth:", len(auv_isam.imu_accum))
-
-            auv_isam.createBatch()
-            results = gtsam.LevenbergMarquardtOptimizer(auv_isam.batch_graph, auv_isam.batch_initial, gtsam.LevenbergMarquardtParams()).optimize()
-
-            auv_isam.timestamp += 1
+            #auv_isam.createBatch()
+            slam.batch_create(with_landmark=True)
+            results = gtsam.LevenbergMarquardtOptimizer(slam.graph, slam.initial_estimate, gtsam.LevenbergMarquardtParams()).optimize()            
+            slam.graph.saveGraph("graph.dot")
 
             break
-        
-        rospy.sleep(0.25)
+
+
+        rate.sleep()
 
     points = constr3DPoints(results)
 
-
-    # print(results)
-    #plot.plot_trajectory(1, results)
-    #plt.show()
-
     fig = plt.figure()
     ax = plt.axes(projection='3d')
-    x = [auv_isam.odom_accum[i]['x'] for i in range(len(auv_isam.odom_accum))]
-    y = [auv_isam.odom_accum[i]['y'] for i in range(len(auv_isam.odom_accum))]
-    z = [auv_isam.odom_accum[i]['z'] for i in range(len(auv_isam.odom_accum))]
-    ax.plot3D(x, y, z, color='orange', linewidth=2)
-    ax.plot3D(points[:,0], points[:,1], points[:,2], color='blue')
-
+    x = np.array([slam.odom_compare[i].x() for i in range(len(slam.odom_compare))])
+    y = np.array([slam.odom_compare[i].y() for i in range(len(slam.odom_compare))])
+    z = np.array([slam.odom_compare[i].z() for i in range(len(slam.odom_compare))])
+    ax.plot3D(x, y, z, color='orange', linewidth=2, label="Odometry")
+    ax.plot3D(points[1:,0], points[1:,1], points[1:,2], color='blue', label="Ours (SLAM + Landmarks)")
+    #ax.plot3D(points2[1:,0], points2[1:,1], points2[1:,2], color='green')
+    plt.legend()
+    plt.title("Underwater Visual SLAM Trajectory")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
     plt.show()
+
+    odom = np.hstack((x.reshape(-1, 1), y.reshape(-1,1), z.reshape(-1,1)))
+    odom -= np.array([0,0,0.7433])
+
+    squared_diff = np.square(odom - points[1:, :])
+    mse = np.mean(squared_diff)
+    print("MSE=", mse)
+
+
