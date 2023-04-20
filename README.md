@@ -9,7 +9,7 @@ Group Members:
 - [Hersh Vakharia](https://github.com/hvak)
 - [Menelik Weatherspoon](https://github.com/menelik002)
 
-Here is our video presentation: [https://drive.google.com/file/d/1fWqroe5BD5YkaPLsU8kTBoGOHVovdXrJ/view?usp=share_link](https://drive.google.com/file/d/1fWqroe5BD5YkaPLsU8kTBoGOHVovdXrJ/view?usp=share_link)
+Here is our video presentation: [https://www.youtube.com/watch?v=LLFDb0DvM18](https://www.youtube.com/watch?v=LLFDb0DvM18)
 
 ## Build
 This system was built using ROS Noetic in Ubuntu 20.04.
